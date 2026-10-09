@@ -58,9 +58,12 @@ uint32_t espSdrFreqMHz();
 //
 // Returns the number of frames actually transmitted. 0 means the TX path
 // refused the call (not ready, bad args, or hardware).
+// If `keepRunning` is non-null, the loop also exits early as soon as it reads
+// false -- used to implement a UI-driven STOP button. The durationMs still
+// acts as a hard safety cap.
 uint32_t espSdrTxBurst(const uint8_t* frame, size_t frameLen,
                         uint32_t durationMs, uint32_t intervalUs,
-                        uint8_t channel);
+                        uint8_t channel, volatile bool* keepRunning);
 
 // Experimental: undocumented ROM path to emit a near-CW tone via the
 // ESP32's internal rftest. Enables TX pbus + TX clock + starts the tone,

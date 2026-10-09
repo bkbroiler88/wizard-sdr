@@ -191,12 +191,13 @@ static uint8_t           g_appliedPasses = 1;
 static volatile uint8_t  g_wantAvg       = 4;
 static uint8_t           g_appliedAvg    = 4;
 
-// TX: UI writes g_wantTxMs > 0 to request a burst; RF task copies to a local
-// then zeros g_wantTxMs, runs the burst, and reports back in g_lastTxCount.
+// TX: UI toggles g_txRequest to start. RF task starts, sets g_txRunning=true,
+// and loops until UI clears g_txRunning OR safety timeout trips.
 enum class TxMode : uint8_t { BEACON = 0, DEAUTH = 1, PROBE = 2, CARRIER = 3 };
+static volatile bool     g_txRequest      = false;// UI → RF: begin TX now
+static volatile bool     g_txRunning      = false;// RF → UI (and UI STOP)
 static volatile uint32_t g_wantToneMs     = 0;    // >0 → fire ROM CW tone
 static bool              g_toneSel        = false;// MODE tab: 802.11 vs TONE
-static volatile uint32_t g_wantTxMs       = 0;    // milliseconds; 0 = idle
 static volatile uint32_t g_lastTxCount    = 0;    // frames sent in last burst
 static volatile uint32_t g_lastTxFinishMs = 0;    // millis() when burst ended
 static uint16_t          g_txDurMs        = 500;  // total burst duration
@@ -631,55 +632,45 @@ static void rfTask(void*) {
             }
         }
 
-        // --- TX burst request from UI task.
-        uint32_t txMs = g_wantTxMs;
-        if (txMs > 0 && espSdrReady()) {
-            if (txMs > 5000) txMs = 5000;
-            const uint8_t  mode  = g_txMode;
+        // --- TX start request from UI task (toggle model: UI sets request,
+        //     RF loops with g_txRunning as the live cancel flag).
+        if (g_txRequest && !g_txRunning && espSdrReady()) {
+            g_txRequest = false;
+            g_txRunning = true;
             const uint8_t  ch    = (g_txChannel >= 1 && g_txChannel <= 14)
                                      ? g_txChannel : g_appliedCh;
-            // CARRIER = beacon with 0 pacing (tightest 802.11-shaped energy).
+            // Hard safety cap -- RF task will exit after this even if STOP
+            // never comes (CLI disconnected, UI frozen, etc). User-selected
+            // Dur chip, min 100ms, max 60s.
+            uint32_t capMs = g_txDurMs;
+            if (capMs < 100)   capMs = 100;
+            if (capMs > 60000) capMs = 60000;
             uint32_t pacing = g_txIntervalUs;
-            const uint8_t* src = kTxBeacon;
-            size_t         len = sizeof(kTxBeacon);
+            // Only beacon frame remains (other modes dropped; CARRIER=pace0).
             static uint8_t txFrame[sizeof(kTxBeacon)];
-            switch ((TxMode)mode) {
-                case TxMode::BEACON:
-                    src = kTxBeacon; len = sizeof(kTxBeacon);
-                    break;
-                case TxMode::DEAUTH:
-                    src = kTxDeauth; len = sizeof(kTxDeauth);
-                    break;
-                case TxMode::PROBE:
-                    src = kTxProbe;  len = sizeof(kTxProbe);
-                    break;
-                case TxMode::CARRIER:
-                    src = kTxBeacon; len = sizeof(kTxBeacon);
-                    pacing = 0;
-                    break;
-            }
-            memcpy(txFrame, src, len);
+            memcpy(txFrame, kTxBeacon, sizeof(kTxBeacon));
             uint32_t sent = 0;
             if (g_txHop) {
-                // Hop across channels 1..13, each dwellMs, until total
-                // duration is spent.
                 uint16_t dwellMs = g_txHopDwellMs > 10 ? g_txHopDwellMs : 10;
-                uint32_t remaining = txMs;
-                uint8_t  hopCh     = (ch >= 1 && ch <= 13) ? ch : 1;
-                while (remaining > 0) {
-                    uint32_t slice = (remaining > dwellMs) ? dwellMs : remaining;
-                    if (src == kTxBeacon) txFrame[sizeof(kTxBeacon) - 1] = hopCh;
-                    sent += espSdrTxBurst(txFrame, len, slice, pacing, hopCh);
-                    remaining -= slice;
-                    hopCh = (hopCh % 13) + 1;    // 1..13 wrap
+                uint32_t t0 = millis();
+                uint8_t  hopCh = (ch >= 1 && ch <= 13) ? ch : 1;
+                while (g_txRunning && (millis() - t0) < capMs) {
+                    txFrame[sizeof(kTxBeacon) - 1] = hopCh;
+                    uint32_t slice = dwellMs;
+                    uint32_t left  = capMs - (millis() - t0);
+                    if (slice > left) slice = left;
+                    sent += espSdrTxBurst(txFrame, sizeof(kTxBeacon),
+                                          slice, pacing, hopCh, &g_txRunning);
+                    hopCh = (hopCh % 13) + 1;
                 }
             } else {
-                if (src == kTxBeacon) txFrame[sizeof(kTxBeacon) - 1] = ch;
-                sent = espSdrTxBurst(txFrame, len, txMs, pacing, ch);
+                txFrame[sizeof(kTxBeacon) - 1] = ch;
+                sent = espSdrTxBurst(txFrame, sizeof(kTxBeacon),
+                                     capMs, pacing, ch, &g_txRunning);
             }
             g_lastTxCount    = sent;
             g_lastTxFinishMs = millis();
-            g_wantTxMs       = 0;
+            g_txRunning      = false;
             g_binAvgPrimed   = false;
         }
         const uint8_t  clockIdx = (uint8_t)g_appliedSpan;
@@ -1770,12 +1761,14 @@ static void drawTxModeTab() {
     drawGlowButton(kTxMargin + kw + gap,      kTxKindY, kw, kTxKindH,
                    "TONE  (CW experiment)", g_toneSel, 2);
 
-    // Big FIRE button
+    // Big START/STOP toggle button
     const int fx = kTxMargin, fw = 320 - 2 * kTxMargin;
     drawGlowButton(fx, kTxFireY, fw, kTxFireH, "", true, 2);
     tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(color::WARN_AMBER, color::BG);
-    tft.drawString(g_toneSel ? "FIRE TONE" : "FIRE",
+    const bool live = g_txRunning;
+    tft.setTextColor(live ? color::WARN_AMBER : color::OK_GREEN, color::BG);
+    tft.drawString(live ? "STOP"
+                        : (g_toneSel ? "START TONE" : "START"),
                    fx + fw / 2, kTxFireY + kTxFireH / 2, 4);
 
     // Config readout -- what the next FIRE will actually do
@@ -1823,13 +1816,17 @@ static bool txModeTouch(int tx, int ty) {
             g_toneSel = true; return true;
         }
     }
-    // FIRE: route based on kind
+    // START / STOP toggle
     if (ty >= kTxFireY && ty < kTxFireY + kTxFireH
         && tx >= kTxMargin && tx < 320 - kTxMargin) {
         if (g_toneSel) {
-            if (g_wantToneMs == 0) g_wantToneMs = g_txDurMs;
+            if (g_wantToneMs == 0) g_wantToneMs = g_txDurMs;    // CW stub
         } else {
-            if (g_wantTxMs == 0) g_wantTxMs = g_txDurMs;
+            if (g_txRunning) {
+                g_txRunning = false;         // STOP → tells rfTask to exit
+            } else if (!g_txRequest) {
+                g_txRequest = true;          // START → rfTask will begin
+            }
         }
         return true;
     }
@@ -2235,6 +2232,18 @@ static void uiTask(void*) {
             }
         }
 
+        // Redraw TRANSMIT screen when g_txRunning flips (safety-timeout exit,
+        // CLI stop, hop channel change readouts) so the button label stays
+        // correct without a touch nudge.
+        {
+            static bool sLastTxRunning = false;
+            if (g_screen == Screen::TRANSMIT
+                && (bool)g_txRunning != sLastTxRunning) {
+                sLastTxRunning = g_txRunning;
+                renderCurrentScreen();
+            }
+        }
+
         // Debounced config save: once a change is a few seconds idle, flush.
         if (g_cfgDirty && (millis() - g_cfgLastSaveMs) > 3000) {
             saveConfig();
@@ -2310,6 +2319,45 @@ extern "C" {
     void tx_cont_cfg(unsigned);
     void tx_cont_en(void);
     void tx_cont_dis(void);
+    // libphy.a internal (phy_chip_v7.o) -- actual tone emitter the RF test
+    // firmware's wifiscwout vtable[68] appears to resolve to. Signature from
+    // disassembly: 5+ int args, where a3 and a6 are scaled frequency params.
+    void ram_start_tx_tone(int, int, int, int, int);
+    // Additional libphy symbols for TX path setup (candidates for the
+    // phy_fn_A/B/C chain the RF test handler calls BEFORE ram_start_tx_tone).
+    void rf_init(void);
+    void chip_v7_set_chan(int);
+    void chip_v7_set_chan_nomac(int, int);
+    void ram_pbus_xpd_tx_on(int);
+    void ram_rfpll_set_freq(unsigned);
+    void i2c_rftx_init(void);
+    void set_chanfreq(int);
+    void force_txrxoff(void);
+    // PA gain control (available in Arduino's libphy)
+    void set_tx_gain_table(const void* tbl);     // actual signature TBD
+    void target_power_backoff(int dB);
+    void phy_close_pa(int en);
+    void set_tx_dig_gain(int a, int b);
+    void tx_pwctrl_init(void);
+    void ram_tx_pwr_backoff(int);
+    void phy_wifitx_low_power(int);
+    // Calibration functions that might trigger a TX blip. The _fn aliases
+    // keep callsites tidy where we need extra decls inside function scope.
+    void bb_init(void);
+    void tx_pwctrl_cal(void);
+    void tx_pwctrl_init(void);                   // referenced as tx_pwctrl_init_fn
+    void tx_pwctrl_init_cal(void);
+    void set_chan_dig_gain(int);
+    static inline void tx_pwctrl_init_fn(void)        { tx_pwctrl_init(); }
+    static inline void tx_pwctrl_init_cal_fn(void)    { tx_pwctrl_init_cal(); }
+    static inline void set_chan_dig_gain_fn(int c)    { set_chan_dig_gain(c); }
+
+    // One of the above pulls in phy_chip_v7.o::set_rx_gain_testchip_70,
+    // which references phy_tx_pwr_track_en (not in Arduino's SDK). Weak
+    // stub keeps the linker happy; the function is only called by code
+    // paths we don't actually invoke.
+    void phy_tx_pwr_track_en(int) __attribute__((weak));
+    void phy_tx_pwr_track_en(int) {}
 }
 
 #include "esp_wifi.h"
@@ -2391,6 +2439,74 @@ static void cliExec(char* line) {
         int a0 = arg(1);
         rom_stop_tx_tone(a0);
         Serial.printf("ok rom_stop(%d)\n", a0);
+        return;
+    }
+    if (!strcmp(tok, "ram_start")) {
+        // 5-arg form matching the ram_start_tx_tone signature inferred from
+        // its disassembly. First arg = power/mode, next ones = freq params.
+        int a0 = arg(1), a1 = arg(0), a2 = arg(0), a3 = arg(0), a4 = arg(1);
+        ram_start_tx_tone(a0, a1, a2, a3, a4);
+        Serial.printf("ok ram_start(%d,%d,%d,%d,%d)\n", a0, a1, a2, a3, a4);
+        return;
+    }
+    if (!strcmp(tok, "ram_stop")) {
+        int a0 = arg(1);
+        rom_stop_tx_tone(a0);
+        Serial.printf("ok ram_stop → rom_stop(%d)\n", a0);
+        return;
+    }
+    if (!strcmp(tok, "rf_init"))         { rf_init();         Serial.println("ok rf_init"); return; }
+    if (!strcmp(tok, "cv7_chan"))        { int c=arg(11); chip_v7_set_chan(c); Serial.printf("ok cv7_chan=%d\n",c); return; }
+    if (!strcmp(tok, "cv7_chan_nomac"))  { int c=arg(11),s=arg(0); chip_v7_set_chan_nomac(c,s); Serial.printf("ok cv7_chan_nomac(%d,%d)\n",c,s); return; }
+    if (!strcmp(tok, "ram_tx_on"))       { int v=arg(1); ram_pbus_xpd_tx_on(v); Serial.printf("ok ram_tx_on=%d\n",v); return; }
+    if (!strcmp(tok, "rfpll_ram"))       { unsigned m=(unsigned)arg(2462); ram_rfpll_set_freq(m); Serial.printf("ok rfpll_ram=%u\n",m); return; }
+    if (!strcmp(tok, "rftx_init"))       { i2c_rftx_init(); Serial.println("ok rftx_init"); return; }
+    if (!strcmp(tok, "set_cf"))          { int c=arg(11); set_chanfreq(c); Serial.printf("ok set_cf=%d\n",c); return; }
+    if (!strcmp(tok, "txrx_off"))        { force_txrxoff(); Serial.println("ok txrx_off"); return; }
+    if (!strcmp(tok, "pwr_backoff"))     { int d=arg(0); target_power_backoff(d); Serial.printf("ok pwr_backoff=%d\n",d); return; }
+    if (!strcmp(tok, "close_pa"))        { int e=arg(0); phy_close_pa(e); Serial.printf("ok close_pa=%d\n",e); return; }
+    if (!strcmp(tok, "tx_dig_gain"))     { int a=arg(0xff),b=arg(0xff); set_tx_dig_gain(a,b); Serial.printf("ok tx_dig_gain(0x%x,0x%x)\n",a,b); return; }
+    if (!strcmp(tok, "pwctrl_init"))     { tx_pwctrl_init(); Serial.println("ok pwctrl_init"); return; }
+    if (!strcmp(tok, "ram_pwr_backoff")) { int d=arg(0); ram_tx_pwr_backoff(d); Serial.printf("ok ram_pwr_backoff=%d\n",d); return; }
+    if (!strcmp(tok, "wifitx_lp"))       { int e=arg(0); phy_wifitx_low_power(e); Serial.printf("ok wifitx_lp=%d\n",e); return; }
+    if (!strcmp(tok, "bb_init"))         { bb_init(); Serial.println("ok bb_init"); return; }
+    if (!strcmp(tok, "pwctrl_cal"))      { tx_pwctrl_cal(); Serial.println("ok pwctrl_cal"); return; }
+    if (!strcmp(tok, "pwctrl_init2"))    { tx_pwctrl_init_fn();   Serial.println("ok pwctrl_init"); return; }
+    if (!strcmp(tok, "pwctrl_cal2"))     { tx_pwctrl_init_cal_fn(); Serial.println("ok pwctrl_init_cal"); return; }
+    // txdc_cal removed -- not exported in Arduino libphy (only ram_txdc_cal_v70)
+    if (!strcmp(tok, "cdig_gain"))       { int c=arg(11); set_chan_dig_gain_fn(c); Serial.printf("ok cdig_gain(%d)\n",c); return; }
+    if (!strcmp(tok, "reboot"))          { Serial.println("ok reboot"); delay(50); ESP.restart(); return; }
+    if (!strcmp(tok, "wifi_reinit")) {
+        // Force WiFi stack teardown + re-init -- same chain that produces
+        // the boot-time TX cal blip.
+        Serial.println("wifi_reinit: deinit...");
+        esp_wifi_set_promiscuous(false);
+        esp_wifi_stop();
+        esp_wifi_deinit();
+        delay(50);
+        Serial.println("wifi_reinit: init + start...");
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_wifi_init(&cfg);
+        esp_wifi_set_storage(WIFI_STORAGE_RAM);
+        esp_wifi_set_mode(WIFI_MODE_NULL);
+        esp_wifi_start();
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        esp_wifi_set_promiscuous(true);
+        esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE);
+        Serial.println("ok wifi_reinit");
+        return;
+    }
+    if (!strcmp(tok, "fullprime")) {
+        // Full setup sequence attempt: force off → chan → RF init → TX pbus → tx_cont_cfg/en
+        force_txrxoff();
+        chip_v7_set_chan(arg(11));
+        rf_init();
+        i2c_rftx_init();
+        ram_pbus_xpd_tx_on(1);
+        rom_set_txclk_en(1);
+        tx_cont_cfg(1);
+        tx_cont_en();
+        Serial.println("ok fullprime (chan11, PA primed)");
         return;
     }
     if (!strcmp(tok, "tone")) {

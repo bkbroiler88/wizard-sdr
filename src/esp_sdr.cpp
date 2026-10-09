@@ -182,7 +182,7 @@ bool espSdrSetAgc(bool on) {
 // burst, restore NULL + promiscuous + ROM-level RX after.
 uint32_t espSdrTxBurst(const uint8_t* frame, size_t frameLen,
                         uint32_t durationMs, uint32_t intervalUs,
-                        uint8_t channel) {
+                        uint8_t channel, volatile bool* keepRunning) {
     if (!g_ready || !frame || frameLen < 24 || durationMs == 0) {
         Serial.printf("[sdr] txBurst: bad args ready=%d frame=%p len=%u ms=%lu\n",
                       g_ready, frame, (unsigned)frameLen, (unsigned long)durationMs);
@@ -210,6 +210,7 @@ uint32_t espSdrTxBurst(const uint8_t* frame, size_t frameLen,
     const uint32_t t0 = (uint32_t)(esp_timer_get_time() / 1000);
     uint32_t count = 0, failFirst = 0, yieldCtr = 0;
     while ((uint32_t)(esp_timer_get_time() / 1000) - t0 < durationMs) {
+        if (keepRunning && !*keepRunning) break;
         esp_err_t t = esp_wifi_80211_tx(WIFI_IF_STA, frame, frameLen, false);
         if (t == ESP_OK) count++;
         else if (count == 0 && failFirst == 0) failFirst = (uint32_t)t;
