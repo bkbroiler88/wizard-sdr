@@ -62,6 +62,13 @@ uint32_t espSdrTxBurst(const uint8_t* frame, size_t frameLen,
                         uint32_t durationMs, uint32_t intervalUs,
                         uint8_t channel);
 
+// Experimental: undocumented ROM path to emit a near-CW tone via the
+// ESP32's internal rftest. Enables TX pbus + TX clock + starts the tone,
+// holds for durationMs (bounded at 5 s), stops it, restores RX state.
+// Returns 1 on success, 0 on bad args. May hang if ROM function signatures
+// are wrong on this chip.
+uint32_t espSdrCwTone(uint8_t channel, uint32_t durationMs);
+
 // Phase 2.4: receiver gain control.
 //
 // The ESP32's integrated receive path has a programmable gain stage. In AGC

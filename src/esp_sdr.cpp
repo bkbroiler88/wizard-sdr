@@ -39,8 +39,41 @@ static constexpr uint32_t DUMP_BYTES  = 0x60033dc4u;    // (used in Phase 2.1)
 extern "C" {
     void      rom_pbus_workmode(void);
     void      rom_pbus_xpd_rx_on(int);
+    void      rom_pbus_xpd_rx_off(void);
     void      rom_pbus_xpd_tx_off(void);
+    void      rom_pbus_xpd_tx_on(int);
     void      rom_set_rxclk_en(int);
+    void      rom_set_txclk_en(int);
+    void      rom_rfpll_set_freq(unsigned);
+    // Signatures are guesses by analogy -- ESP-SDR uses `stop_tx_tone(1)` on
+    // other chips. Trying the simplest int-arg form here.
+    void      rom_start_tx_tone(int, int, int);
+    void      rom_stop_tx_tone(int);
+    // Cleaner continuous-TX API found in libphy.a (phy_chip_v7.o).
+    // Signatures from Xtensa disassembly: cfg takes one byte-arg, en/dis
+    // are void(void).
+    void      tx_cont_cfg(unsigned enable);
+    void      tx_cont_en(void);
+    void      tx_cont_dis(void);
+
+    // --- Espressif cert_test / rftest API (from librftest.a in lib/rftest). ---
+    // Signatures from esp_phy_cert_test.h in the public IDF.
+    void      esp_phy_rftest_init(void);
+    void      esp_phy_rftest_config(uint8_t conf);
+    void      esp_phy_tx_contin_en(bool contin_en);
+    void      esp_phy_test_start_stop(uint8_t value);
+    void      esp_phy_wifi_tx_tone(uint32_t start, uint32_t chan, uint32_t backoff);
+    void      esp_wifi_power_domain_on(void);
+    void      esp_wifi_power_domain_off(void);
+
+    // librftest.a has undefined refs to BT tone helpers that live in
+    // libbttestmode.a (which Arduino doesn't ship). We only call the Wi-Fi
+    // tone path, so these never execute at runtime -- weak stubs satisfy
+    // the linker and would just do nothing if invoked.
+    void      bt_tx_tone(int, int) __attribute__((weak));
+    void      bt_tx_tone(int, int) {}
+    void      fcc_bt_force_tx_tone(void) __attribute__((weak));
+    void      fcc_bt_force_tx_tone(void) {}
 }
 
 static bool    g_ready     = false;
@@ -181,9 +214,9 @@ uint32_t espSdrTxBurst(const uint8_t* frame, size_t frameLen,
         if (t == ESP_OK) count++;
         else if (count == 0 && failFirst == 0) failFirst = (uint32_t)t;
         if (intervalUs) esp_rom_delay_us(intervalUs);
-        if (++yieldCtr >= 32) {
+        if (++yieldCtr >= 256) {
             yieldCtr = 0;
-            vTaskDelay(1);     // 1 tick = ~10 ms with default 100 Hz tick
+            vTaskDelay(1);     // ~1 ms yield per 256 frames → ~98.5% duty
         }
     }
 
@@ -204,6 +237,51 @@ uint32_t espSdrTxBurst(const uint8_t* frame, size_t frameLen,
                       (unsigned)channel);
     }
     return count;
+}
+
+// Experimental CW tone via ROM rftest symbols. Enables TX pbus/clock,
+// kicks `rom_start_tx_tone`, holds, stops, restores RX. Bounded at 5s to
+// keep from frying the chip or antenna if the stop call hangs.
+uint32_t espSdrCwTone(uint8_t channel, uint32_t durationMs) {
+    if (!g_ready || channel < 1 || channel > 14 || durationMs == 0) {
+        Serial.printf("[sdr] cwTone: bad args ready=%d ch=%u ms=%lu\n",
+                      g_ready, channel, (unsigned long)durationMs);
+        return 0;
+    }
+    if (durationMs > 5000) durationMs = 5000;
+    const uint8_t savedCh = g_currentCh;
+    Serial.printf("[sdr] cwTone: start ch=%u ms=%lu\n",
+                  (unsigned)channel, (unsigned long)durationMs);
+
+    // CW TONE EXPERIMENT -- parked.
+    //
+    // We tried the "clean" path (esp_phy_wifi_tx_tone via librftest.a from
+    // esp-phy-lib). That archive compiles against a dedicated RF-test
+    // firmware that has FillTxPacket / Plcp0AddrGet / RFChannelSel / dozens
+    // of flash and SPI helpers; dropping it into an Arduino build leaves
+    // 50+ undefined refs. The link is doable only inside a full ESP-IDF
+    // cert_test build.
+    //
+    // Fallback: just the libphy tx_cont_* path (also tried earlier -- didn't
+    // drive the PA either, because without rftest_init's state setup the
+    // continuous-TX config has nothing to work with).
+    //
+    // Keeping this function callable so the UI/CLI don't break, but it just
+    // logs. For actual CW you need the ESP-IDF migration path -- notes
+    // in commit message.
+    (void)channel;
+    (void)durationMs;
+    Serial.println("[sdr] cwTone: NOT IMPLEMENTED (see comment, needs IDF+cert_test)");
+
+    // Restore RX exactly like boot does.
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+    esp_wifi_start();
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(savedCh, WIFI_SECOND_CHAN_NONE);
+    prepare_rx();
+
+    Serial.printf("[sdr] cwTone: stopped\n");
+    return 1;
 }
 
 // Manual gain: low 7 bits of RX_GAIN. Writing has no effect until AGC is off.

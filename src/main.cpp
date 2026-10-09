@@ -194,6 +194,8 @@ static uint8_t           g_appliedAvg    = 4;
 // TX: UI writes g_wantTxMs > 0 to request a burst; RF task copies to a local
 // then zeros g_wantTxMs, runs the burst, and reports back in g_lastTxCount.
 enum class TxMode : uint8_t { BEACON = 0, DEAUTH = 1, PROBE = 2, CARRIER = 3 };
+static volatile uint32_t g_wantToneMs     = 0;    // >0 → fire ROM CW tone
+static bool              g_toneSel        = false;// MODE tab: 802.11 vs TONE
 static volatile uint32_t g_wantTxMs       = 0;    // milliseconds; 0 = idle
 static volatile uint32_t g_lastTxCount    = 0;    // frames sent in last burst
 static volatile uint32_t g_lastTxFinishMs = 0;    // millis() when burst ended
@@ -615,6 +617,19 @@ static void rfTask(void*) {
             g_binAvgPrimed = false;    // reset so new alpha isn't biased
         }
         const float binAlpha = 1.0f / (float)g_appliedAvg;
+
+        // --- CW tone request (experimental, ROM rftest path).
+        {
+            uint32_t toneMs = g_wantToneMs;
+            if (toneMs > 0 && espSdrReady()) {
+                uint8_t ch = (g_txChannel >= 1 && g_txChannel <= 14)
+                             ? g_txChannel : g_appliedCh;
+                espSdrCwTone(ch, toneMs);
+                g_lastTxFinishMs = millis();
+                g_wantToneMs     = 0;
+                g_binAvgPrimed   = false;
+            }
+        }
 
         // --- TX burst request from UI task.
         uint32_t txMs = g_wantTxMs;
@@ -1741,18 +1756,27 @@ static bool inTxTabBar(int tx, int ty, TxTab& which) {
 }
 
 // --- MODE tab -------------------------------------------------------------
-constexpr int kTxFireY = 56,  kTxFireH = 80;
+constexpr int kTxKindY = 42,  kTxKindH = 22;
+constexpr int kTxFireY = 70,  kTxFireH = 72;
 constexpr int kTxStatY = 150;
 constexpr int kTxWarnY = 212;
 
 static void drawTxModeTab() {
-    // Big FIRE button -- MODE tab is just FIRE + readout now. All config
-    // (channel, hop, duration, pacing, dwell) lives on the Tune tab.
+    // Kind selector: 802.11 (raw beacon tight loop) vs TONE (ROM rftest CW)
+    const int gap = 6;
+    const int kw = (320 - 2 * kTxMargin - gap) / 2;
+    drawGlowButton(kTxMargin,                 kTxKindY, kw, kTxKindH,
+                   "802.11", !g_toneSel, 2);
+    drawGlowButton(kTxMargin + kw + gap,      kTxKindY, kw, kTxKindH,
+                   "TONE  (CW experiment)", g_toneSel, 2);
+
+    // Big FIRE button
     const int fx = kTxMargin, fw = 320 - 2 * kTxMargin;
     drawGlowButton(fx, kTxFireY, fw, kTxFireH, "", true, 2);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(color::WARN_AMBER, color::BG);
-    tft.drawString("FIRE", fx + fw / 2, kTxFireY + kTxFireH / 2, 4);
+    tft.drawString(g_toneSel ? "FIRE TONE" : "FIRE",
+                   fx + fw / 2, kTxFireY + kTxFireH / 2, 4);
 
     // Config readout -- what the next FIRE will actually do
     char info[64];
@@ -1788,9 +1812,25 @@ static void drawTxModeTab() {
 }
 
 static bool txModeTouch(int tx, int ty) {
+    // Kind selector row
+    if (ty >= kTxKindY && ty < kTxKindY + kTxKindH) {
+        const int gap = 6;
+        const int kw = (320 - 2 * kTxMargin - gap) / 2;
+        if (tx >= kTxMargin && tx < kTxMargin + kw) {
+            g_toneSel = false; return true;
+        }
+        if (tx >= kTxMargin + kw + gap && tx < kTxMargin + 2 * kw + gap) {
+            g_toneSel = true; return true;
+        }
+    }
+    // FIRE: route based on kind
     if (ty >= kTxFireY && ty < kTxFireY + kTxFireH
         && tx >= kTxMargin && tx < 320 - kTxMargin) {
-        if (g_wantTxMs == 0) g_wantTxMs = g_txDurMs;
+        if (g_toneSel) {
+            if (g_wantToneMs == 0) g_wantToneMs = g_txDurMs;
+        } else {
+            if (g_wantTxMs == 0) g_wantTxMs = g_txDurMs;
+        }
         return true;
     }
     return false;
@@ -2254,10 +2294,143 @@ void setup() {
     }
 }
 
+// --- Experimental serial CLI for poking the undocumented TX path --------
+// All commands are one line, args space-separated. Lines echo "ok" or "err <msg>".
+extern "C" {
+    void rom_pbus_workmode(void);
+    void rom_pbus_xpd_rx_on(int);
+    void rom_pbus_xpd_rx_off(void);
+    void rom_pbus_xpd_tx_off(void);
+    void rom_pbus_xpd_tx_on(int);
+    void rom_set_rxclk_en(int);
+    void rom_set_txclk_en(int);
+    void rom_rfpll_set_freq(unsigned);
+    void rom_start_tx_tone(int, int, int);
+    void rom_stop_tx_tone(int);
+    void tx_cont_cfg(unsigned);
+    void tx_cont_en(void);
+    void tx_cont_dis(void);
+}
+
+#include "esp_wifi.h"
+
+static void cliExec(char* line) {
+    // Lightweight tokenization
+    char* tok = strtok(line, " \t");
+    if (!tok) return;
+    auto arg = [](int def) {
+        char* a = strtok(nullptr, " \t");
+        return a ? (int)strtol(a, nullptr, 0) : def;
+    };
+    if (!strcmp(tok, "help")) {
+        Serial.println("cmds: help | mode null|sta|ap | promisc 0|1 | chan N | rfpll MHz |");
+        Serial.println("      pbus_tx on|off | pbus_rx on|off | txclk 0|1 | rxclk 0|1 |");
+        Serial.println("      cont_cfg 0|1 | cont_en | cont_dis |");
+        Serial.println("      rom_start A B C | rom_stop A |");
+        Serial.println("      tone ch ms  (full canned sequence) |");
+        Serial.println("      reset_rx    (restore full promiscuous RX)");
+        return;
+    }
+    if (!strcmp(tok, "mode")) {
+        const char* a = strtok(nullptr, " \t");
+        if (!a) { Serial.println("err mode <null|sta|ap>"); return; }
+        wifi_mode_t m = WIFI_MODE_NULL;
+        if (!strcmp(a, "sta"))      m = WIFI_MODE_STA;
+        else if (!strcmp(a, "ap"))  m = WIFI_MODE_AP;
+        else if (!strcmp(a, "null"))m = WIFI_MODE_NULL;
+        else { Serial.println("err mode <null|sta|ap>"); return; }
+        esp_err_t e = esp_wifi_set_mode(m);
+        esp_wifi_start();
+        Serial.printf("ok mode %s rc=%d\n", a, (int)e);
+        return;
+    }
+    if (!strcmp(tok, "promisc")) {
+        int v = arg(1);
+        esp_err_t e = esp_wifi_set_promiscuous(v != 0);
+        Serial.printf("ok promisc=%d rc=%d\n", v, (int)e);
+        return;
+    }
+    if (!strcmp(tok, "chan")) {
+        int v = arg(6);
+        esp_err_t e = esp_wifi_set_channel((uint8_t)v, WIFI_SECOND_CHAN_NONE);
+        Serial.printf("ok chan=%d rc=%d\n", v, (int)e);
+        return;
+    }
+    if (!strcmp(tok, "rfpll")) {
+        unsigned mhz = (unsigned)arg(2437);
+        rom_rfpll_set_freq(mhz);
+        Serial.printf("ok rfpll=%u\n", mhz);
+        return;
+    }
+    if (!strcmp(tok, "pbus_tx")) {
+        const char* a = strtok(nullptr, " \t");
+        if (!a) { Serial.println("err pbus_tx on|off"); return; }
+        if (!strcmp(a, "on"))  { rom_pbus_xpd_tx_on(1); Serial.println("ok tx on"); }
+        else                   { rom_pbus_xpd_tx_off(); Serial.println("ok tx off"); }
+        return;
+    }
+    if (!strcmp(tok, "pbus_rx")) {
+        const char* a = strtok(nullptr, " \t");
+        if (!a) { Serial.println("err pbus_rx on|off"); return; }
+        if (!strcmp(a, "on"))  { rom_pbus_xpd_rx_on(1); Serial.println("ok rx on"); }
+        else                   { rom_pbus_xpd_rx_off(); Serial.println("ok rx off"); }
+        return;
+    }
+    if (!strcmp(tok, "txclk")) { int v = arg(1); rom_set_txclk_en(v); Serial.printf("ok txclk=%d\n", v); return; }
+    if (!strcmp(tok, "rxclk")) { int v = arg(1); rom_set_rxclk_en(v); Serial.printf("ok rxclk=%d\n", v); return; }
+    if (!strcmp(tok, "cont_cfg")) { int v = arg(1); tx_cont_cfg((unsigned)v); Serial.printf("ok cont_cfg=%d\n", v); return; }
+    if (!strcmp(tok, "cont_en"))  { tx_cont_en();  Serial.println("ok cont_en"); return; }
+    if (!strcmp(tok, "cont_dis")) { tx_cont_dis(); Serial.println("ok cont_dis"); return; }
+    if (!strcmp(tok, "rom_start")) {
+        int a0 = arg(1), a1 = arg(6), a2 = arg(0);
+        rom_start_tx_tone(a0, a1, a2);
+        Serial.printf("ok rom_start(%d,%d,%d)\n", a0, a1, a2);
+        return;
+    }
+    if (!strcmp(tok, "rom_stop")) {
+        int a0 = arg(1);
+        rom_stop_tx_tone(a0);
+        Serial.printf("ok rom_stop(%d)\n", a0);
+        return;
+    }
+    if (!strcmp(tok, "tone")) {
+        int ch = arg(11), ms = arg(500);
+        Serial.printf("tone ch=%d ms=%d (via espSdrCwTone)\n", ch, ms);
+        espSdrCwTone((uint8_t)ch, (uint32_t)ms);
+        return;
+    }
+    if (!strcmp(tok, "reset_rx")) {
+        rom_pbus_workmode();
+        rom_pbus_xpd_tx_off();
+        rom_pbus_xpd_rx_on(1);
+        rom_set_rxclk_en(1);
+        esp_wifi_set_mode(WIFI_MODE_NULL);
+        esp_wifi_start();
+        esp_wifi_set_promiscuous(true);
+        Serial.println("ok reset_rx");
+        return;
+    }
+    Serial.printf("err unknown '%s' -- try 'help'\n", tok);
+}
+
+static void cliPoll() {
+    static char buf[96];
+    static size_t len = 0;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\r') continue;
+        if (c == '\n') {
+            buf[len] = 0;
+            if (len) cliExec(buf);
+            len = 0;
+            continue;
+        }
+        if (len < sizeof(buf) - 1) buf[len++] = c;
+    }
+}
+
 void loop() {
-    // Arduino main loop runs on Core-1 by default. We've got dedicated FreeRTOS
-    // tasks for both roles, so this stays idle. Keep a heartbeat so the watchdog
-    // sees activity and so a serial reader can see we're alive.
+    cliPoll();
     static unsigned long last = 0;
     unsigned long now = millis();
     if (now - last > 5000) {
@@ -2266,5 +2439,5 @@ void loop() {
                       (unsigned)ESP.getFreeHeap());
         last = now;
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(20));
 }
