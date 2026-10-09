@@ -1,0 +1,1009 @@
+<title>Signalhound CYD</title>
+<style>
+  /* ============================================================
+     Layout: top-of-page concept + dual-core diagram, then a 3×3
+     screen storyboard, then feature list in grouped sections, then
+     core allocation table. Stacks to one column under 820px.
+     ============================================================ */
+
+  :root {
+    --paper: #ebe8df;
+    --paper-2: #ddd7c7;
+    --ink: #141712;
+    --ink-dim: #4a4e42;
+    --rule: rgba(20,23,18,.14);
+    --rule-strong: rgba(20,23,18,.28);
+
+    --bezel: #e9c04a;
+    --bezel-dim: #c9a238;
+    --bezel-rim: #8a6a14;
+
+    --scr-bg: rgb(11,14,20);
+    --scr-head: rgb(16,22,34);
+    --scr-blue: rgb(40,120,200);
+    --scr-sky: rgb(90,180,255);
+    --scr-gray: rgb(140,152,165);
+    --scr-dim: rgb(90,100,112);
+    --scr-green: rgb(70,200,120);
+    --scr-amber: rgb(230,170,50);
+    --scr-red: rgb(224,64,64);
+    --scr-trace: rgb(170,230,120);
+
+    --core0: #4a9fdf;   /* Core-0 identity: cool blue (radio-side) */
+    --core1: #e39438;   /* Core-1 identity: warm amber (UI-side) */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #141311;
+      --paper-2: #1c1a16;
+      --ink: #ece7d8;
+      --ink-dim: #a7a192;
+      --rule: rgba(236,231,216,.12);
+      --rule-strong: rgba(236,231,216,.25);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #141311;
+    --paper-2: #1c1a16;
+    --ink: #ece7d8;
+    --ink-dim: #a7a192;
+    --rule: rgba(236,231,216,.12);
+    --rule-strong: rgba(236,231,216,.25);
+    color-scheme: dark;
+  }
+
+  html, body { background: var(--paper); color: var(--ink); }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+    padding-block: 48px;
+    padding-inline: clamp(16px, 4vw, 48px);
+    max-width: 1200px;
+    margin-inline: auto;
+  }
+
+  .eyebrow {
+    font-family: 'VT323', ui-monospace, monospace;
+    font-size: 18px;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    margin: 0 0 10px;
+  }
+  .eyebrow .b { color: var(--core0); }
+  .eyebrow .a { color: var(--core1); }
+
+  h1 {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-weight: 500;
+    font-size: clamp(32px, 5vw, 48px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0 0 14px;
+    max-width: 24ch;
+  }
+  .lede {
+    color: var(--ink-dim);
+    max-width: 62ch;
+    font-size: 15px;
+    margin: 0;
+  }
+  .lede strong { color: var(--ink); font-weight: 500; }
+
+  h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 24px;
+    letter-spacing: -0.01em;
+    margin: 56px 0 8px;
+  }
+  .h2-note {
+    color: var(--ink-dim);
+    font-size: 14px;
+    margin: 0 0 24px;
+    max-width: 56ch;
+  }
+
+  /* ========================= Core legend chips ========================= */
+  .legend {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 18px;
+    font-family: 'VT323', monospace;
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .legend .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    border: 1px solid var(--rule-strong);
+    color: var(--ink);
+  }
+  .legend .dot {
+    width: 10px; height: 10px; border-radius: 2px;
+  }
+  .legend .c0 .dot { background: var(--core0); }
+  .legend .c1 .dot { background: var(--core1); }
+
+  /* ========================= Architecture diagram ========================= */
+  .arch {
+    margin-top: 24px;
+    padding: 24px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--paper-2);
+    overflow-x: auto;
+  }
+  .arch svg { max-width: 100%; height: auto; display: block; min-width: 700px; }
+
+  /* ========================= Screen storyboard ========================= */
+  .storyboard {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    margin-top: 24px;
+  }
+  @media (max-width: 820px) {
+    .storyboard { grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  }
+  @media (max-width: 540px) {
+    .storyboard { grid-template-columns: 1fr; }
+  }
+
+  .screen-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .screen-card .mini {
+    aspect-ratio: 320 / 240;
+    background: var(--scr-bg);
+    border: 2px solid var(--bezel);
+    border-radius: 4px;
+    box-shadow: 0 8px 24px -14px rgba(0,0,0,.4);
+    overflow: hidden;
+    position: relative;
+    container-type: inline-size;
+    font-family: 'VT323', ui-monospace, monospace;
+    color: var(--scr-sky);
+  }
+  .screen-card h3 {
+    font-family: 'VT323', monospace;
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--scr-sky);
+    margin: 10px 0 2px;
+  }
+  .screen-card h3 .num {
+    color: var(--ink-dim);
+    margin-right: 8px;
+    letter-spacing: 0.08em;
+  }
+  .screen-card p {
+    font-size: 13px;
+    color: var(--ink-dim);
+    margin: 0;
+    line-height: 1.4;
+    min-height: 2.8em;
+  }
+  .screen-card .usage {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    font-family: 'VT323', monospace;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+  }
+  .screen-card .usage .u {
+    padding: 1px 7px;
+    border-radius: 2px;
+    border: 1px solid var(--rule-strong);
+    color: var(--ink-dim);
+  }
+  .screen-card .usage .u.c0 { color: var(--core0); border-color: var(--core0); }
+  .screen-card .usage .u.c1 { color: var(--core1); border-color: var(--core1); }
+
+  /* ========================= Shared on-screen primitives ========================= */
+  .scr-top {
+    position: absolute; top:0; left:0; right:0; height:11%;
+    background: var(--scr-head); display:flex; align-items:center;
+    padding: 0 2.5cqw; font-size: 4.6cqw;
+    justify-content: space-between;
+  }
+  .scr-top .l { color: var(--scr-amber); letter-spacing: 0.14em; text-transform: uppercase; }
+  .scr-top .r { color: var(--scr-gray); font-size: 4cqw; }
+  .scr-top .r b { color: var(--scr-green); font-weight: normal; }
+  .scr-pills {
+    position: absolute; left: 2.5cqw; right: 2.5cqw; bottom: 2cqw;
+    display: flex; gap: 1.2cqw; font-size: 3.4cqw; color: var(--scr-dim);
+    flex-wrap: wrap;
+  }
+  .scr-pills .p { padding: 0.4cqw 1.2cqw; border: 1px solid rgba(140,152,165,.3); border-radius: 2px; letter-spacing: 0.08em; }
+  .scr-pills .p.on { color: var(--scr-green); border-color: rgba(70,200,120,.5); }
+  .scr-pills .p.hot { color: var(--scr-amber); border-color: rgba(230,170,50,.5); }
+
+  /* ---------- 1. HOME ---------- */
+  .s-home .grid {
+    position: absolute; top: 13%; left: 2.5cqw; right: 2.5cqw; bottom: 2.5cqw;
+    display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr);
+    gap: 2.4cqw;
+  }
+  .s-home .tile {
+    background: var(--scr-head); border: 1px solid rgba(90,180,255,.3); border-radius: 2px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 1cqw; text-align: center;
+  }
+  .s-home .tile .ic { font-size: 10cqw; line-height: 1; }
+  .s-home .tile .lb { font-size: 4.4cqw; margin-top: 0.6cqw; color: var(--scr-sky); letter-spacing: 0.06em; }
+  .s-home .tile .ic.amb { color: var(--scr-amber); }
+  .s-home .tile .ic.sky { color: var(--scr-sky); }
+  .s-home .tile .ic.grn { color: var(--scr-green); }
+  .s-home .tile .ic.gry { color: var(--scr-gray); }
+  .s-home .tile .ic.red { color: var(--scr-red); }
+
+  /* ---------- 2. LIVE ---------- */
+  .s-live .plot {
+    position: absolute; top: 13%; left: 2.5cqw; right: 2.5cqw; height: 38%;
+    border-left: 1px solid rgba(140,152,165,.35);
+    border-bottom: 1px solid rgba(140,152,165,.35);
+    background: linear-gradient(180deg, rgba(90,180,255,.04), rgba(90,180,255,0));
+  }
+  .s-live svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .s-live .trace { fill: none; stroke: var(--scr-trace); stroke-width: 1.4; }
+  .s-live .trace-fill { fill: rgba(170,230,120,.14); stroke: none; }
+  .s-live .pk { fill: var(--scr-amber); }
+  .s-live .gl { stroke: rgba(140,152,165,.1); stroke-width: 1; }
+  .s-live .wf {
+    position: absolute; top: 53%; left: 2.5cqw; right: 2.5cqw; height: 36%;
+    border: 1px solid rgba(140,152,165,.2); background: var(--wf-00);
+  }
+  .s-live .wrow { width: 100%; }
+
+  /* ---------- 3. TRIGGER ---------- */
+  .s-trig .plot {
+    position: absolute; top: 13%; left: 2.5cqw; right: 2.5cqw; bottom: 20%;
+    border-left: 1px solid rgba(140,152,165,.35);
+    border-bottom: 1px solid rgba(140,152,165,.35);
+  }
+  .s-trig svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .s-trig .trace { fill: none; stroke: var(--scr-trace); stroke-width: 1.2; opacity: .7; }
+  .s-trig .mask { fill: none; stroke: var(--scr-amber); stroke-width: 1.6; stroke-dasharray: 2 2; }
+  .s-trig .breach { fill: rgba(224,64,64,.25); stroke: var(--scr-red); stroke-width: 1.2; }
+  .s-trig .ctl {
+    position: absolute; bottom: 2.5cqw; left: 2.5cqw; right: 2.5cqw;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5cqw;
+    font-size: 4cqw;
+  }
+  .s-trig .ctl .b {
+    padding: 1.5cqw 0; text-align: center; letter-spacing: 0.08em;
+    border: 1px solid rgba(90,180,255,.4); border-radius: 2px; color: var(--scr-sky);
+  }
+  .s-trig .ctl .b.sel { background: rgba(230,170,50,.18); border-color: var(--scr-amber); color: var(--scr-amber); }
+  .s-trig .ctl .b.go { background: rgba(70,200,120,.14); border-color: var(--scr-green); color: var(--scr-green); }
+
+  /* ---------- 4. CAPTURING ---------- */
+  .s-cap .cap-head {
+    position: absolute; top: 13%; left: 0; right: 0; text-align: center;
+    font-size: 15cqw; letter-spacing: 0.02em; color: var(--scr-red);
+    font-family: 'VT323', monospace;
+  }
+  .s-cap .cap-sub {
+    position: absolute; top: 36%; left: 0; right: 0; text-align: center;
+    font-size: 5cqw; color: var(--scr-dim); letter-spacing: 0.14em;
+  }
+  .s-cap .cap-stat {
+    position: absolute; top: 50%; left: 2.5cqw; right: 2.5cqw;
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 1cqw 4cqw;
+    font-size: 5cqw; color: var(--scr-sky);
+  }
+  .s-cap .cap-stat .k { color: var(--scr-dim); font-size: 3.8cqw; letter-spacing: 0.1em; }
+  .s-cap .cap-stat .v { font-size: 6cqw; }
+  .s-cap .cap-stat .v.go { color: var(--scr-green); }
+  .s-cap .ring {
+    position: absolute; bottom: 7cqw; left: 2.5cqw; right: 2.5cqw; height: 2cqw;
+    background: var(--scr-head); border-radius: 1cqw; overflow: hidden;
+  }
+  .s-cap .ring span {
+    display: block; height: 100%;
+    background: linear-gradient(90deg, var(--scr-amber), var(--scr-red));
+    width: 72%;
+  }
+  .s-cap .ring-label {
+    position: absolute; bottom: 2.5cqw; left: 2.5cqw; right: 2.5cqw;
+    font-size: 3.6cqw; color: var(--scr-dim); display: flex; justify-content: space-between;
+  }
+
+  /* ---------- 5. CAPTURES ---------- */
+  .s-caps .list {
+    position: absolute; top: 13%; left: 2.5cqw; right: 2.5cqw; bottom: 15%;
+    overflow: hidden;
+  }
+  .s-caps .row {
+    display: grid; grid-template-columns: 7cqw 1fr auto; align-items: center;
+    gap: 2cqw; padding: 1.4cqw 1.2cqw; margin-bottom: 1cqw;
+    border: 1px solid rgba(140,152,165,.22); border-radius: 2px;
+    font-size: 3.8cqw; color: var(--scr-sky);
+  }
+  .s-caps .row .ic { color: var(--scr-amber); font-size: 5cqw; line-height: 1; text-align: center; }
+  .s-caps .row .ic.ok { color: var(--scr-green); }
+  .s-caps .row .ic.ql { color: var(--scr-sky); }
+  .s-caps .row .ic.dec { color: var(--scr-amber); }
+  .s-caps .row .meta { color: var(--scr-dim); font-size: 3.2cqw; letter-spacing: 0.08em; }
+  .s-caps .row .size { color: var(--scr-gray); font-size: 3.2cqw; }
+  .s-caps .row.hi { border-color: rgba(230,170,50,.5); background: rgba(230,170,50,.08); }
+  .s-caps .foot {
+    position: absolute; bottom: 2cqw; left: 2.5cqw; right: 2.5cqw;
+    display: flex; justify-content: space-between; font-size: 3.6cqw;
+    color: var(--scr-dim); letter-spacing: 0.1em;
+  }
+  .s-caps .foot b { color: var(--scr-amber); font-weight: normal; }
+
+  /* ---------- 6. DECODING ---------- */
+  .s-dec .proto {
+    position: absolute; top: 13%; left: 0; right: 0; text-align: center;
+    font-size: 7cqw; color: var(--scr-amber); letter-spacing: 0.14em;
+  }
+  .s-dec .fname {
+    position: absolute; top: 24%; left: 0; right: 0; text-align: center;
+    font-size: 4.4cqw; color: var(--scr-dim); letter-spacing: 0.08em;
+  }
+  .s-dec .ring2 {
+    position: absolute; top: 33%; left: 10cqw; right: 10cqw; height: 3cqw;
+    background: var(--scr-head); border-radius: 2px; overflow: hidden;
+  }
+  .s-dec .ring2 span {
+    display: block; height: 100%;
+    background: linear-gradient(90deg, var(--scr-green), var(--scr-sky));
+    width: 56%;
+  }
+  .s-dec .pct {
+    position: absolute; top: 42%; left: 0; right: 0; text-align: center;
+    font-size: 6cqw; color: var(--scr-sky);
+  }
+  .s-dec .lines {
+    position: absolute; top: 54%; left: 2.5cqw; right: 2.5cqw; bottom: 14%;
+    font-size: 3.4cqw; color: var(--scr-sky); line-height: 1.35;
+  }
+  .s-dec .lines .ln { color: var(--scr-dim); }
+  .s-dec .lines .ln.hit { color: var(--scr-green); }
+  .s-dec .lines .ln.warn { color: var(--scr-amber); }
+
+  /* ---------- 7. FINDING DETAIL ---------- */
+  .s-find .hdr {
+    position: absolute; top: 13%; left: 2.5cqw; right: 2.5cqw;
+    font-size: 5cqw; color: var(--scr-sky); line-height: 1.2;
+  }
+  .s-find .hdr .proto {
+    font-size: 4cqw; color: var(--scr-amber); letter-spacing: 0.1em;
+  }
+  .s-find .fields {
+    position: absolute; top: 28%; left: 2.5cqw; right: 2.5cqw; bottom: 14%;
+    font-size: 3.6cqw; color: var(--scr-sky);
+    display: grid; grid-template-columns: 10ch 1fr; row-gap: 1cqw; column-gap: 2cqw;
+  }
+  .s-find .fields .k { color: var(--scr-dim); letter-spacing: 0.1em; font-size: 3.2cqw; }
+  .s-find .fields .v { color: var(--scr-sky); }
+  .s-find .fields .v.hot { color: var(--scr-amber); }
+  .s-find .fields .v.ok { color: var(--scr-green); }
+
+  /* ---------- 8. TUNE ---------- */
+  .s-tune .big {
+    position: absolute; top: 20%; left: 0; right: 0; text-align: center;
+    font-size: 22cqw; color: var(--scr-sky); font-feature-settings: 'tnum';
+  }
+  .s-tune .u { position: absolute; top: 46%; left: 0; right: 0; text-align: center; font-size: 5cqw; color: var(--scr-dim); letter-spacing: 0.2em; }
+  .s-tune .steps { position: absolute; top: 56%; left: 3cqw; right: 3cqw; display: flex; gap: 1.3cqw; }
+  .s-tune .steps .s {
+    flex: 1; padding: 1.5cqw 0; text-align: center; font-size: 4.4cqw;
+    border: 1px solid rgba(90,180,255,.4); border-radius: 2px; color: var(--scr-sky);
+  }
+  .s-tune .steps .s.on { background: rgba(230,170,50,.18); border-color: var(--scr-amber); color: var(--scr-amber); }
+  .s-tune .ctl {
+    position: absolute; bottom: 2.5cqw; left: 3cqw; right: 3cqw;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.8cqw;
+    font-size: 6cqw;
+  }
+  .s-tune .ctl .b { padding: 2.5cqw 0; text-align: center; border: 1px solid rgba(90,180,255,.4); border-radius: 2px; color: var(--scr-sky); }
+  .s-tune .ctl .b.go { background: rgba(70,200,120,.14); border-color: var(--scr-green); color: var(--scr-green); }
+
+  /* ---------- 9. SETTINGS ---------- */
+  .s-set .rows { position: absolute; top: 13%; left: 2.5cqw; right: 2.5cqw; bottom: 2.5cqw; font-size: 4cqw; }
+  .s-set .r {
+    display: grid; grid-template-columns: 1fr auto; align-items: center;
+    padding: 1.3cqw 0; border-bottom: 1px solid rgba(140,152,165,.14);
+    color: var(--scr-sky);
+  }
+  .s-set .r .k { color: var(--scr-sky); font-size: 4cqw; letter-spacing: 0.06em; }
+  .s-set .r .v { color: var(--scr-amber); font-size: 4cqw; letter-spacing: 0.08em; }
+  .s-set .r .v.ok { color: var(--scr-green); }
+  .s-set .r .v.dim { color: var(--scr-dim); }
+
+  /* ========================= Feature table ========================= */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    margin-top: 24px;
+  }
+  @media (max-width: 820px) { .features { grid-template-columns: 1fr; } }
+  .fcard {
+    padding: 20px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--paper-2);
+  }
+  .fcard h3 {
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin: 0 0 12px;
+    color: var(--scr-sky);
+  }
+  .fcard ul { margin: 0; padding-left: 20px; }
+  .fcard li { margin-bottom: 6px; font-size: 14px; color: var(--ink); }
+  .fcard li .dim { color: var(--ink-dim); }
+  .fcard li code {
+    font-family: 'VT323', monospace;
+    font-size: 15px;
+    background: var(--paper);
+    padding: 0 5px;
+    border-radius: 2px;
+  }
+  .fcard li .c0, .fcard li .c1 {
+    display: inline-block;
+    font-family: 'VT323', monospace;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    padding: 1px 7px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: 1px;
+  }
+  .fcard li .c0 { color: var(--core0); border: 1px solid var(--core0); }
+  .fcard li .c1 { color: var(--core1); border: 1px solid var(--core1); }
+
+  /* ========================= Core allocation table ========================= */
+  .alloc {
+    margin-top: 24px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .alloc table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .alloc th, .alloc td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .alloc th {
+    background: var(--paper-2);
+    font-weight: 500;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-family: 'VT323', monospace;
+  }
+  .alloc td code {
+    font-family: 'VT323', monospace;
+    font-size: 15px;
+    background: var(--paper-2);
+    padding: 0 5px;
+    border-radius: 2px;
+  }
+  .alloc .mode-c0 { color: var(--core0); font-weight: 500; }
+  .alloc .mode-c1 { color: var(--core1); font-weight: 500; }
+  .alloc .mode-both { color: var(--ink); font-weight: 500; }
+  .alloc tr:last-child td { border-bottom: 0; }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-dim);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=VT323&display=swap">
+
+<header>
+  <p class="eyebrow"><span class="b">standalone</span> · <span class="a">dual-core</span> · esp-sdr on cyd</p>
+  <h1>Signalhound CYD — a 2.4 GHz watcher that keeps its own evidence</h1>
+  <p class="lede">A standalone 2.4 GHz spectrum watcher built on the Cheap Yellow Display and the ESP-SDR debug-path receiver. <strong>Core-0</strong> owns the radio and runs a lightweight live classifier; <strong>Core-1</strong> owns the touchscreen, the SD card, and the deferred decoder. The two never block each other — capture never waits on UI, decode never steals the radio.</p>
+  <div class="legend">
+    <span class="chip c0"><span class="dot"></span>Core-0 · RF</span>
+    <span class="chip c1"><span class="dot"></span>Core-1 · UI + decode</span>
+  </div>
+</header>
+
+<!-- ============================================================
+     Architecture diagram
+     ============================================================ -->
+<h2>Dual-core architecture</h2>
+<p class="h2-note">A hard split with a lock-free ring between them. Core-0 produces samples at line rate; Core-1 is a consumer with three distinct hats: UI compositor, SD writer, and decoder worker. The decoder only runs when the operator asks or when the mask trigger fires.</p>
+
+<div class="arch">
+<svg viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Dual-core architecture diagram">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+
+  <!-- Core-0 column -->
+  <g>
+    <rect x="20" y="12" width="300" height="336" rx="6" fill="rgba(74,159,223,0.08)" stroke="var(--core0)" stroke-width="1.5"/>
+    <text x="34" y="36" font-family="VT323, monospace" font-size="18" letter-spacing="2" fill="var(--core0)">CORE-0 · RADIO SIDE</text>
+
+    <!-- RF capture -->
+    <rect x="40" y="56" width="260" height="56" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="54" y="78" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">RF capture driver</text>
+    <text x="54" y="97" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">ESP-SDR debug path · up to 20 MS/s</text>
+
+    <!-- Ring buffer -->
+    <rect x="40" y="132" width="260" height="56" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="54" y="154" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">Lock-free sample ring</text>
+    <text x="54" y="173" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">~400 KB internal SRAM · 8 or 10-bit I/Q</text>
+
+    <!-- Live classifier -->
+    <rect x="40" y="208" width="260" height="56" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="54" y="230" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">Live classifier (cheap)</text>
+    <text x="54" y="249" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">FFT · band energy map · burst shape</text>
+
+    <!-- Mask trigger -->
+    <rect x="40" y="284" width="260" height="48" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="54" y="304" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">Mask / threshold trigger</text>
+    <text x="54" y="321" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">promotes burst → write queue</text>
+  </g>
+
+  <!-- Center hand-off -->
+  <g>
+    <!-- spectrum frames -->
+    <line x1="320" y1="156" x2="440" y2="156" stroke="var(--ink-dim)" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="340" y="148" font-family="VT323, monospace" font-size="12" fill="var(--ink-dim)" letter-spacing="1">FFT frames (60 Hz)</text>
+
+    <!-- captured burst -->
+    <line x1="320" y1="236" x2="440" y2="236" stroke="var(--ink-dim)" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="340" y="228" font-family="VT323, monospace" font-size="12" fill="var(--ink-dim)" letter-spacing="1">burst → SD queue</text>
+
+    <!-- classifier events -->
+    <line x1="320" y1="308" x2="440" y2="308" stroke="var(--ink-dim)" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="340" y="300" font-family="VT323, monospace" font-size="12" fill="var(--ink-dim)" letter-spacing="1">class events</text>
+  </g>
+
+  <!-- Core-1 column -->
+  <g>
+    <rect x="440" y="12" width="300" height="336" rx="6" fill="rgba(227,148,56,0.08)" stroke="var(--core1)" stroke-width="1.5"/>
+    <text x="454" y="36" font-family="VT323, monospace" font-size="18" letter-spacing="2" fill="var(--core1)">CORE-1 · UI + DECODE</text>
+
+    <rect x="460" y="56" width="260" height="56" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="474" y="78" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">UI compositor</text>
+    <text x="474" y="97" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">TFT redraw · touch · dirty-rect only</text>
+
+    <rect x="460" y="132" width="260" height="56" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="474" y="154" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">SD writer (streaming)</text>
+    <text x="474" y="173" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">bursts · session logs · findings</text>
+
+    <rect x="460" y="208" width="260" height="56" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="474" y="230" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">Deferred decoder</text>
+    <text x="474" y="249" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">radio-idle only · one of a bank</text>
+
+    <rect x="460" y="284" width="260" height="48" rx="4" fill="var(--paper)" stroke="var(--rule-strong)"/>
+    <text x="474" y="304" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="500" fill="var(--ink)">Findings log + NVS state</text>
+    <text x="474" y="321" font-family="VT323, monospace" font-size="13" fill="var(--ink-dim)">appended to SD · browsable on-screen</text>
+  </g>
+
+</svg>
+</div>
+
+<!-- ============================================================
+     Screen storyboard
+     ============================================================ -->
+<h2>Nine screens</h2>
+<p class="h2-note">The whole operator surface. Each card lists which core is working while it's showing — the "idle" ones let decode run opportunistically on Core-1.</p>
+
+<div class="storyboard">
+
+  <!-- 1 HOME -->
+  <div class="screen-card">
+    <div class="mini s-home">
+      <div class="scr-top"><span class="l">SIGNALHOUND</span><span class="r">C0 · 240 MHz · <b>IDLE</b></span></div>
+      <div class="grid">
+        <div class="tile"><div class="ic amb">≋</div><div class="lb">LIVE</div></div>
+        <div class="tile"><div class="ic sky">◉</div><div class="lb">TRIGGER</div></div>
+        <div class="tile"><div class="ic grn">●</div><div class="lb">RECORD</div></div>
+        <div class="tile"><div class="ic sky">▤</div><div class="lb">CAPTURES</div></div>
+        <div class="tile"><div class="ic amb">⚙</div><div class="lb">DECODE</div></div>
+        <div class="tile"><div class="ic gry">✱</div><div class="lb">SETTINGS</div></div>
+      </div>
+    </div>
+    <h3><span class="num">01</span>HOME</h3>
+    <p>Six-tile launcher. Radio idle; a background decode continues if one is queued.</p>
+    <div class="usage"><span class="u c1">C1 UI</span><span class="u">radio idle</span></div>
+  </div>
+
+  <!-- 2 LIVE -->
+  <div class="screen-card">
+    <div class="mini s-live" id="s-live-mini">
+      <div class="scr-top"><span class="l">LIVE · CH1-13</span><span class="r">80 MS/s · <b>RX</b></span></div>
+      <div class="plot">
+        <svg viewBox="0 0 100 50" preserveAspectRatio="none">
+          <line class="gl" x1="0" y1="12" x2="100" y2="12"/>
+          <line class="gl" x1="0" y1="24" x2="100" y2="24"/>
+          <line class="gl" x1="0" y1="36" x2="100" y2="36"/>
+          <path class="trace-fill" d="M0 44 L4 43 L8 42 L12 41 L16 39 L20 36 L24 32 L28 28 L32 22 L36 16 L40 10 L44 14 L48 20 L52 24 L56 22 L60 20 L64 24 L68 28 L72 32 L76 36 L80 38 L84 37 L88 39 L92 40 L96 41 L100 42 L100 50 L0 50 Z"/>
+          <path class="trace" d="M0 44 L4 43 L8 42 L12 41 L16 39 L20 36 L24 32 L28 28 L32 22 L36 16 L40 10 L44 14 L48 20 L52 24 L56 22 L60 20 L64 24 L68 28 L72 32 L76 36 L80 38 L84 37 L88 39 L92 40 L96 41 L100 42"/>
+          <circle class="pk" cx="40" cy="10" r="1.2"/>
+        </svg>
+      </div>
+      <div class="wf" id="s-live-wf"></div>
+      <div class="scr-pills"><span class="p on">AGC</span><span class="p">AVG×4</span><span class="p hot">PK HOLD</span></div>
+    </div>
+    <h3><span class="num">02</span>LIVE SPECTRUM</h3>
+    <p>Default view. Trace + 24-row waterfall. Tap bands to re-tune; tap REC to mark a burst.</p>
+    <div class="usage"><span class="u c0">C0 RF</span><span class="u c1">C1 UI</span></div>
+  </div>
+
+  <!-- 3 TRIGGER -->
+  <div class="screen-card">
+    <div class="mini s-trig">
+      <div class="scr-top"><span class="l">TRIGGER · MASK</span><span class="r">armed · <b>WAIT</b></span></div>
+      <div class="plot">
+        <svg viewBox="0 0 100 50" preserveAspectRatio="none">
+          <path class="trace" d="M0 42 L10 40 L20 38 L30 35 L40 20 L50 18 L60 36 L70 38 L80 40 L90 41 L100 42"/>
+          <path class="mask" d="M0 28 L100 28"/>
+          <path class="breach" d="M35 28 L45 28 L45 8 L35 8 Z"/>
+        </svg>
+      </div>
+      <div class="ctl">
+        <span class="b">BAND</span>
+        <span class="b sel">MASK</span>
+        <span class="b">DWELL</span>
+        <span class="b go">ARM</span>
+      </div>
+    </div>
+    <h3><span class="num">03</span>TRIGGER</h3>
+    <p>Draw a mask across the band; auto-capture when any bin breaches it with pre-trigger buffer.</p>
+    <div class="usage"><span class="u c0">C0 RF</span><span class="u c1">C1 UI</span></div>
+  </div>
+
+  <!-- 4 CAPTURING -->
+  <div class="screen-card">
+    <div class="mini s-cap">
+      <div class="scr-top"><span class="l">● CAPTURING</span><span class="r">SRAM → SD · <b>HOT</b></span></div>
+      <div class="cap-head">10 ms</div>
+      <div class="cap-sub">BURST TO SRAM</div>
+      <div class="cap-stat">
+        <div><div class="k">RATE</div><div class="v">20 MS/s</div></div>
+        <div><div class="k">BITS</div><div class="v">8+8</div></div>
+        <div><div class="k">SIZE</div><div class="v">400 kB</div></div>
+        <div><div class="k">TO SD</div><div class="v go">4.1 s</div></div>
+      </div>
+      <div class="ring"><span></span></div>
+      <div class="ring-label"><span>SD WRITE</span><span>72%</span></div>
+    </div>
+    <h3><span class="num">04</span>CAPTURING</h3>
+    <p>RAM burst finished; Core-1 is draining to SD. Radio is free again — Core-0 can resume LIVE under this screen.</p>
+    <div class="usage"><span class="u c0">C0 RF</span><span class="u c1">C1 SD</span></div>
+  </div>
+
+  <!-- 5 CAPTURES -->
+  <div class="screen-card">
+    <div class="mini s-caps">
+      <div class="scr-top"><span class="l">CAPTURES</span><span class="r">14 files · <b>SD 2.1 GB</b></span></div>
+      <div class="list">
+        <div class="row hi"><span class="ic dec">◐</span><span><div>14:32:08 · 10ms · <span class="meta">OFDM-like</span></div></span><span class="size">400 KB</span></div>
+        <div class="row"><span class="ic ok">✓</span><span><div>14:28:51 · 10ms · <span class="meta">NRF24 GFSK</span></div></span><span class="size">400 KB</span></div>
+        <div class="row"><span class="ic ql">◇</span><span><div>14:17:03 · 1s · <span class="meta">narrow 2 MS/s</span></div></span><span class="size">4.0 MB</span></div>
+        <div class="row"><span class="ic ok">✓</span><span><div>14:04:19 · 10ms · <span class="meta">BLE adv</span></div></span><span class="size">400 KB</span></div>
+      </div>
+      <div class="foot"><span>TAP TO DECODE</span><span>DECODING <b>1</b></span></div>
+    </div>
+    <h3><span class="num">05</span>CAPTURES</h3>
+    <p>SD files, sortable by time or size. ◐ decoding · ✓ decoded · ◇ pending. Tap to open or re-queue.</p>
+    <div class="usage"><span class="u c1">C1 UI</span><span class="u">radio idle</span></div>
+  </div>
+
+  <!-- 6 DECODING -->
+  <div class="screen-card">
+    <div class="mini s-dec">
+      <div class="scr-top"><span class="l">DECODING</span><span class="r">C1 busy · <b>RADIO FREE</b></span></div>
+      <div class="proto">OFDM 20MHz</div>
+      <div class="fname">14:32:08.iq · 400 KB · 10 ms</div>
+      <div class="ring2"><span></span></div>
+      <div class="pct">56%</div>
+      <div class="lines">
+        <div class="ln">▸ cp sync .................... ok</div>
+        <div class="ln">▸ chan equalize .............. ok</div>
+        <div class="ln">▸ viterbi K=7 rate 1/2 ...... ...</div>
+        <div class="ln hit">◆ beacon frame — "GuestNet" ch6</div>
+        <div class="ln warn">◆ beacon frame — "GuestNet" ch6 (dupe)</div>
+      </div>
+    </div>
+    <h3><span class="num">06</span>DECODING</h3>
+    <p>Background task eating Core-1 while Core-0 keeps the radio alive. Progress is per-decoder.</p>
+    <div class="usage"><span class="u c1">C1 decode</span><span class="u c0">C0 free</span></div>
+  </div>
+
+  <!-- 7 FINDING -->
+  <div class="screen-card">
+    <div class="mini s-find">
+      <div class="scr-top"><span class="l">FINDING</span><span class="r"><b>decoded</b></span></div>
+      <div class="hdr">
+        <div class="proto">WIFI · 802.11g · BEACON</div>
+        <div>SSID "GuestNet"</div>
+      </div>
+      <div class="fields">
+        <div class="k">BSSID</div><div class="v">A4:5E:60:11:08:C2</div>
+        <div class="k">CH</div><div class="v">6 (2437 MHz)</div>
+        <div class="k">RSSI</div><div class="v hot">-54 dBm</div>
+        <div class="k">BI</div><div class="v">102.4 ms</div>
+        <div class="k">SEC</div><div class="v ok">WPA2-PSK CCMP</div>
+        <div class="k">VNDR</div><div class="v">TP-Link</div>
+        <div class="k">FROM</div><div class="v">14:32:08.iq</div>
+      </div>
+      <div class="scr-pills"><span class="p on">OPEN I/Q</span><span class="p">EXPORT</span><span class="p hot">BASELINE</span></div>
+    </div>
+    <h3><span class="num">07</span>FINDING DETAIL</h3>
+    <p>Decoded frame fields in a labelled grid. Baseline, open the originating I/Q, or export.</p>
+    <div class="usage"><span class="u c1">C1 UI</span></div>
+  </div>
+
+  <!-- 8 TUNE -->
+  <div class="screen-card">
+    <div class="mini s-tune">
+      <div class="scr-top"><span class="l">TUNE · FREQ</span><span class="r">step <b>5 MHz</b></span></div>
+      <div class="big">2437.0</div>
+      <div class="u">MHz</div>
+      <div class="steps">
+        <span class="s">1</span><span class="s on">5</span><span class="s">10</span><span class="s">25</span><span class="s">100</span>
+      </div>
+      <div class="ctl">
+        <span class="b">◀−</span><span class="b">+▶</span><span class="b go">OK</span>
+      </div>
+    </div>
+    <h3><span class="num">08</span>TUNE</h3>
+    <p>Big-numeric readout, step-size pills honest to the 1 MHz grain of <code>FREQ &lt;MHz&gt;</code>.</p>
+    <div class="usage"><span class="u c1">C1 UI</span><span class="u c0">C0 retune</span></div>
+  </div>
+
+  <!-- 9 SETTINGS -->
+  <div class="screen-card">
+    <div class="mini s-set">
+      <div class="scr-top"><span class="l">SETTINGS</span><span class="r">v0.3 · <b>SD OK</b></span></div>
+      <div class="rows">
+        <div class="r"><span class="k">Sample bits</span><span class="v">8 + 8</span></div>
+        <div class="r"><span class="k">Burst size</span><span class="v">10 ms</span></div>
+        <div class="r"><span class="k">Decoder bank</span><span class="v">OFDM, NRF24, GFSK</span></div>
+        <div class="r"><span class="k">Mask trigger</span><span class="v ok">ARMED</span></div>
+        <div class="r"><span class="k">Sleep after</span><span class="v dim">off</span></div>
+        <div class="r"><span class="k">SD write mode</span><span class="v">session log</span></div>
+      </div>
+    </div>
+    <h3><span class="num">09</span>SETTINGS</h3>
+    <p>Decoder bank is the big knob — you load one or more of the demod modules; others stay on SD.</p>
+    <div class="usage"><span class="u c1">C1 UI</span></div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+     Feature list
+     ============================================================ -->
+<h2>Feature list</h2>
+<p class="h2-note">Grouped by job. Each line notes the core doing the work.</p>
+
+<div class="features">
+
+  <div class="fcard">
+    <h3>▸ RF capture</h3>
+    <ul>
+      <li><span class="c0">C0</span> Live spectrum trace at ~60 FFT/s, 256–1024 bin</li>
+      <li><span class="c0">C0</span> Scrolling waterfall, 24 rows on-screen, 120 in memory</li>
+      <li><span class="c0">C0</span> 1 MHz tuning <code>FREQ 2412..2482</code></li>
+      <li><span class="c0">C0</span> Bandwidth <code>BANDWIDTH</code> 4, 8, 10, 20 MHz</li>
+      <li><span class="c0">C0</span> Hardware AGC or manual gain index</li>
+      <li><span class="c0">C0</span> Peak hold, averaging ×2 ×4 ×8, min-hold</li>
+      <li><span class="c0">C0</span> Burst-to-SRAM capture: 10 ms @ 20 MS/s, 400 KB</li>
+    </ul>
+  </div>
+
+  <div class="fcard">
+    <h3>▸ Classification (live)</h3>
+    <ul>
+      <li><span class="c0">C0</span> OFDM-vs-FHSS-vs-CW shape detector per burst</li>
+      <li><span class="c0">C0</span> Channel-energy pie across WiFi 1 / 6 / 11</li>
+      <li><span class="c0">C0</span> BLE adv channel energy (37 / 38 / 39)</li>
+      <li><span class="c0">C0</span> Jammer / interferer flag (floor rise &gt; threshold)</li>
+      <li><span class="c0">C0</span> Microwave oven signature (duty-cycled 2.45)</li>
+      <li><span class="c0">C0</span> Unknown-emitter badge for anything unclassified</li>
+    </ul>
+  </div>
+
+  <div class="fcard">
+    <h3>▸ Triggers</h3>
+    <ul>
+      <li><span class="c0">C0</span> Mask trigger — bin breach promotes burst with pre-trigger</li>
+      <li><span class="c0">C0</span> RSSI threshold trigger with hysteresis</li>
+      <li><span class="c0">C0</span> Timer trigger — every N seconds, auto-capture</li>
+      <li><span class="c0">C0</span> Shape trigger — "any FHSS pattern" or "any OFDM burst"</li>
+      <li><span class="c0">C0</span> Pre-trigger buffer: last 2 ms kept in ring</li>
+    </ul>
+  </div>
+
+  <div class="fcard">
+    <h3>▸ Storage</h3>
+    <ul>
+      <li><span class="c1">C1</span> Burst files <code>/caps/YYYYMMDD-HHMMSS.iq</code></li>
+      <li><span class="c1">C1</span> Session log <code>/sessions/*.jsonl</code> (events, classifier output)</li>
+      <li><span class="c1">C1</span> Decoded findings <code>/findings/*.jsonl</code></li>
+      <li><span class="c1">C1</span> Decimated spectrum log (1–30 days of trend data)</li>
+      <li><span class="c1">C1</span> Baseline file for "known good" emitters</li>
+      <li><span class="c1">C1</span> Export tab: WAV / SigMF / CSV</li>
+    </ul>
+  </div>
+
+  <div class="fcard">
+    <h3>▸ Deferred decoders</h3>
+    <ul>
+      <li><span class="c1">C1</span> NRF24 1M / 2M GFSK (fast)</li>
+      <li><span class="c1">C1</span> BLE 1M / 2M GFSK (fast)</li>
+      <li><span class="c1">C1</span> 802.15.4 O-QPSK (Zigbee / Thread / Matter frames)</li>
+      <li><span class="c1">C1</span> LoRa 2.4 CSS, SF7–SF10</li>
+      <li><span class="c1">C1</span> WiFi 802.11b DSSS (short frames)</li>
+      <li><span class="c1">C1</span> WiFi 802.11g/n OFDM (slow — 5-10× capture time)</li>
+      <li><span class="c1">C1</span> One decoder in RAM at a time; bank selectable in Settings</li>
+    </ul>
+  </div>
+
+  <div class="fcard">
+    <h3>▸ Operator UX</h3>
+    <ul>
+      <li><span class="c1">C1</span> Nine screens, resistive-touch friendly big targets</li>
+      <li><span class="c1">C1</span> Dirty-rect redraw only (per the no-flicker rule)</li>
+      <li><span class="c1">C1</span> Findings log scrollable on-device</li>
+      <li><span class="c1">C1</span> Tap a bar in LIVE to jump-tune to that bin</li>
+      <li><span class="c1">C1</span> One-tap REC = mark the moment, 10ms burst to SD</li>
+      <li><span class="c1">C1</span> Progress badges on CAPTURES rows (◐ ✓ ◇)</li>
+      <li><span class="c1">C1</span> Settings persist to NVS, decoder bank persists to SD</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- ============================================================
+     Core allocation table (summary of invariants)
+     ============================================================ -->
+<h2>Core allocation invariants</h2>
+<p class="h2-note">The rules the scheduler enforces so capture never waits on UI and decode never steals the radio.</p>
+
+<div class="alloc">
+<table>
+  <thead>
+    <tr>
+      <th style="width:28%">While the screen shows</th>
+      <th style="width:36%">Core-0 is doing</th>
+      <th style="width:36%">Core-1 is doing</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>HOME</td>
+      <td class="mode-c0">radio idle, standby</td>
+      <td class="mode-c1">UI + <em>decode if queued</em></td>
+    </tr>
+    <tr>
+      <td>LIVE SPECTRUM</td>
+      <td class="mode-c0">capture, FFT, classify</td>
+      <td class="mode-c1">redraw, touch, (<em>no decode</em> — would fight RAM)</td>
+    </tr>
+    <tr>
+      <td>TRIGGER (armed)</td>
+      <td class="mode-c0">capture, FFT, mask check</td>
+      <td class="mode-c1">UI, SD write only when fired</td>
+    </tr>
+    <tr>
+      <td>CAPTURING (burst phase)</td>
+      <td class="mode-c0">fill SRAM at line rate</td>
+      <td class="mode-c1">UI frozen until burst done</td>
+    </tr>
+    <tr>
+      <td>CAPTURING (SD-drain phase)</td>
+      <td class="mode-c0">radio free, light live trace OK</td>
+      <td class="mode-c1">SRAM → SD at SD speed</td>
+    </tr>
+    <tr>
+      <td>CAPTURES browser</td>
+      <td class="mode-c0">radio idle</td>
+      <td class="mode-c1">UI + <em>decode if queued</em></td>
+    </tr>
+    <tr>
+      <td>DECODING</td>
+      <td class="mode-c0">radio free, light live trace OK</td>
+      <td class="mode-c1">decoder + progress UI</td>
+    </tr>
+    <tr>
+      <td>FINDING DETAIL</td>
+      <td class="mode-c0">radio idle</td>
+      <td class="mode-c1">UI + <em>decode if queued</em></td>
+    </tr>
+    <tr>
+      <td>TUNE</td>
+      <td class="mode-c0">retune, hold FFT</td>
+      <td class="mode-c1">UI</td>
+    </tr>
+    <tr>
+      <td>SETTINGS</td>
+      <td class="mode-c0">radio idle</td>
+      <td class="mode-c1">UI + <em>decode if queued</em></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<footer>
+  Signalhound CYD · ESP32-WROOM-32 · ILI9341 320×240 · ESP-SDR debug-path receiver · screen palette matches ragnar_cyd.ino tokens
+</footer>
+
+<script>
+  // Paint the mini-screen waterfalls so they look alive at thumbnail scale.
+  function pickColor(v) {
+    const palette = [
+      [0,[6,9,26]],[0.2,[27,42,90]],[0.4,[45,79,145]],[0.6,[79,139,182]],[0.8,[212,180,61]],[1.0,[227,74,42]]
+    ];
+    for (let i=0;i<palette.length-1;i++){
+      const [t0,c0]=palette[i],[t1,c1]=palette[i+1];
+      if(v>=t0&&v<=t1){
+        const k=(v-t0)/(t1-t0);
+        const r=Math.round(c0[0]+(c1[0]-c0[0])*k);
+        const g=Math.round(c0[1]+(c1[1]-c0[1])*k);
+        const b=Math.round(c0[2]+(c1[2]-c0[2])*k);
+        return `rgb(${r},${g},${b})`;
+      }
+    }
+    return 'rgb(6,9,26)';
+  }
+  function shape(n){
+    const centers=[2,14,26];
+    const out=new Array(n).fill(0);
+    for(let i=0;i<n;i++){
+      let v=0;
+      for(const c of centers){const d=Math.abs(i-c);v=Math.max(v,Math.exp(-(d*d)/8));}
+      v=0.12+0.78*v+(Math.random()-0.5)*0.14;
+      out[i]=Math.max(0,Math.min(1,v));
+    }
+    return out;
+  }
+  function gradient(row){
+    return 'linear-gradient(90deg,'+row.map((v,i)=>`${pickColor(v)} ${(i/(row.length-1)*100).toFixed(1)}%`).join(',')+')';
+  }
+  function paintWF(id, rows){
+    const el=document.getElementById(id);
+    if(!el) return;
+    for(let r=0;r<rows;r++){
+      const d=document.createElement('div');
+      d.className='wrow';
+      const age=r/rows;
+      const sh=shape(32).map(v=>v*(1-age*0.3));
+      d.style.height=(100/rows).toFixed(3)+'%';
+      d.style.background=gradient(sh);
+      el.appendChild(d);
+    }
+  }
+  paintWF('s-live-wf', 12);
+</script>

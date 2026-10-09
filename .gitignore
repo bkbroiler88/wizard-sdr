@@ -1,0 +1,11 @@
+.pio/
+.vscode/
+*.pyc
+*.swp
+*~
+build/
+*.o
+*.elf
+*.bin
+*.map
+*.d
