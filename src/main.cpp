@@ -33,6 +33,13 @@
 #include <Preferences.h>
 #include "esp_sdr.h"
 #include "esp_wifi.h"            // for esp_wifi_set_channel in radio arbiter
+// esp_phy_init.h is guarded in Arduino's build; declare the two funcs we
+// need manually. Enum: 1=WIFI, 2=BT, 4=IEEE802154 (per esp_phy_init.h).
+extern "C" {
+    void esp_phy_disable(int modem);
+    void esp_phy_enable(int modem);
+}
+constexpr int kPhyModemWifi = 1;
 
 // ----------------------------------------------------------------------------
 // Wireless Wizard palette (Electric Blue preset — matches cyd-bulb-controller
@@ -73,17 +80,30 @@ enum class Screen : uint8_t {
     DECODING,
     FINDING,
     TUNE,         // tabbed: TUNE | GAIN (see g_tuneTab)
-    TRANSMIT,
+    TRANSMIT,     // hub: picks CW vs 802.11 sub-screen
+    TX_CW,        // sub-screen: CW tone + SWEEP (cert_test path)
+    TX_80211,     // sub-screen: 802.11 beacon TX
     SETTINGS,
     _COUNT
 };
+
+// Set true the first time a cert_test (CW/SWEEP) START fires in this boot.
+// Checked when leaving TX_CW -- if dirty, ESP.restart() to release the phy
+// buffers cert_test's rftest_init permanently allocates (no deinit API).
+static volatile bool g_certTestDirty = false;
+
+// Where to land after a boot. 0=HOME, 1=TRANSMIT hub, 2=TX_CW, 3=TX_80211.
+// Written to NVS whenever a sub-screen is entered so a reboot (manual or
+// automatic cert_test-cleanup) returns the user to where they were.
+static uint8_t g_bootDest = 0;
 
 enum class TuneTab : uint8_t { TUNE = 0, GAIN = 1 };
 static TuneTab g_tuneTab = TuneTab::TUNE;
 
 static const char* const kScreenName[] = {
     "HOME", "LIVE", "TRIGGER", "RECORD", "CAPTURES",
-    "DECODING", "FINDING", "TUNE", "TRANSMIT", "SETTINGS",
+    "DECODING", "FINDING", "TUNE", "TRANSMIT",
+    "TX_CW", "TX_80211", "SETTINGS",
 };
 
 // ----------------------------------------------------------------------------
@@ -191,6 +211,12 @@ extern "C" {
     void esp_phy_rftest_init(void);
     void esp_phy_rftest_config(unsigned char);
     void esp_phy_wifi_tx_tone(int start, int chan, int backoff);
+    // BT CW tone via Bluetooth radio (vendored libbttestmode.a). Channel 0..78
+    // maps to 2402..2480 MHz (1 MHz grid, finer than WiFi's 5 MHz grid).
+    void esp_phy_bt_tx_tone(int start, int chan, int backoff);
+    // Fast BT PLL retune while a CW tone is already up (libphy internal).
+    // Equivalent of chip_v7_set_chan_nomac but on the BT radio path.
+    void bt_chan_change(int bt_chan);
     // esp_phy_wifi_tx signature in our vendored librftest.a differs from the
     // esp-idf v5.5 open-source example (which has 6 args, channel first).
     // Keep the 4-arg form that linked and ran without crashing even if the
@@ -215,18 +241,32 @@ extern "C" {
 static volatile uint8_t g_txBackoff = 0;
 
 // Emission mode:
-//   0 = TONE  (narrow CW, esp_phy_wifi_tx_tone, channel-selectable)
-//   1 = PKT20 (continuous 11n packet TX; wide but no channel control)
-//   2 = SWEEP (CW tone rapidly swept ±2 ch around center for wide "carrier"
-//              look with real channel control)
+//   0 = TONE     (WiFi CW on selected channel, 5 MHz grid)
+//   1 = PKT20    (continuous 11n packet TX; wide but no channel control)
+//   2 = SWEEP    (WiFi CW tone swept ±span ch around center, 5 MHz granular)
+//   3 = BT       (BT CW on selected channel, 1 MHz grid via WiFi-ch mapping)
+//   4 = BT_SWEEP (BT CW rapid retune across the full 2.4 GHz ISM band or a
+//                 user-chosen span or BLE adv channels)
 static volatile uint8_t g_cwMode = 0;
-// SWEEP mode params -- matches cyd-bulb-controller nrf_jam.cpp CW handler:
-// init carrier once, then retune the PLL at microsecond rate via a direct
-// low-level channel setter. Yield to the scheduler every kYieldEvery steps.
-static constexpr uint32_t kSweepDwellUs     = 500;  // 500 us per channel (bulb default)
-static constexpr int      kYieldEvery       = 50;   // vTaskDelay(1) every 50 steps
+// BT_SWEEP sub-pattern (only relevant when g_cwMode == 4):
+//   0 = FULL     (sweep BT ch 0..78 = 2402..2480 MHz, entire ISM band)
+//   1 = SPAN     (±span MHz around the selected center WiFi channel)
+//   2 = BLE_ADV  (interleave BLE adv channels: BT 0 / 24 / 78)
+static volatile uint8_t g_btSweepPat = 0;
+// SWEEP mode -- matches cyd-bulb-controller nrf_jam.cpp CW handler:
+// init carrier once, then retune the PLL at microsecond rate via a
+// direct low-level channel setter. Yield to the scheduler every
+// kYieldEvery steps.
+//
+// Dwell is now USER-controlled via a slider on the Transmit screen,
+// range 130us (PLL settle min) .. 2000us. Overrides the earlier
+// auto-adaptive dwell. Default 500us (bulb's WLAN default).
+static constexpr uint32_t kSweepMinDwellUs = 130;  // PLL settle floor
+static constexpr uint32_t kSweepMaxDwellUs = 2000;
+static constexpr int      kYieldEvery      = 50;    // yield every 50 steps
+static volatile uint16_t  g_sweepDwellUs   = 500;
 // User-selectable sweep span (±N WiFi channels). Default ±2 = ~20 MHz wide.
-static volatile uint8_t   g_cwSweepSpan     = 2;
+static volatile uint8_t   g_cwSweepSpan    = 2;
 static volatile uint32_t g_cwSweepLast = 0;
 static volatile int8_t   g_cwSweepPos  = 0;
 // Pending request from UI to change backoff while CW is live. Carried out
@@ -266,6 +306,7 @@ enum RadioMode : uint8_t {
     RADIO_IDLE     = 0,
     RADIO_TX_CW    = 1,
     RADIO_TX_PKT20 = 2,
+    RADIO_TX_BT_CW = 3,     // Bluetooth CW tone (1 MHz grid, 2402-2480)
 };
 static volatile uint8_t g_radioMode = RADIO_IDLE;
 static volatile uint8_t g_radioChan = 0;
@@ -277,8 +318,18 @@ static const char* radioModeName(uint8_t m) {
         case RADIO_IDLE:     return "IDLE";
         case RADIO_TX_CW:    return "CW";
         case RADIO_TX_PKT20: return "PKT20";
+        case RADIO_TX_BT_CW: return "BT_CW";
         default:             return "?";
     }
+}
+// Convert WiFi channel 1..13 to the matching BT channel index so the same
+// channel grid in the UI drives both radio paths. WiFi ch N center = 2412
+// + 5*(N-1) MHz. BT ch N center = 2402 + N MHz. So BT = 5*N + 5.
+static inline int wifiChToBtCh(int wifiCh) {
+    int bt = 5 * wifiCh + 5;
+    if (bt < 0)  bt = 0;
+    if (bt > 78) bt = 78;
+    return bt;
 }
 
 // Clean phy transition. Returns true on success. Serialized via g_radioMtx
@@ -302,7 +353,11 @@ static bool radioSwitchMode(uint8_t target, uint8_t chan, uint8_t bo) {
     // requested channel. PKT20 then re-arms its continuous packet TX on
     // the newly-tuned frequency.
     if (from == target && from != RADIO_IDLE && bo == g_radioBo) {
-        if (from == RADIO_TX_CW) {
+        if (from == RADIO_TX_BT_CW) {
+            esp_phy_bt_tx_tone(0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(3));
+            esp_phy_bt_tx_tone(1, wifiChToBtCh(chan), bo);
+        } else if (from == RADIO_TX_CW) {
             Serial.println("[radio]   FAST retune (CW tone)");
             esp_phy_wifi_tx_tone(0, 0, 0);
             vTaskDelay(pdMS_TO_TICKS(3));
@@ -338,6 +393,9 @@ static bool radioSwitchMode(uint8_t target, uint8_t chan, uint8_t bo) {
         case RADIO_TX_CW:
             esp_phy_wifi_tx_tone(0, 0, 0);
             break;
+        case RADIO_TX_BT_CW:
+            esp_phy_bt_tx_tone(0, 0, 0);
+            break;
         case RADIO_TX_PKT20:
             Serial.println("[radio]   cmdstop (test_start_stop(0))");
             esp_phy_test_start_stop(0);
@@ -351,7 +409,20 @@ static bool radioSwitchMode(uint8_t target, uint8_t chan, uint8_t bo) {
 
     // ---- Step 2: ENTER target mode ----
     if (target == RADIO_IDLE) {
-        if (from != RADIO_IDLE) enableCore0WDT();
+        if (from != RADIO_IDLE) {
+            enableCore0WDT();
+            // Clean phy teardown + re-enable after cert_test. esp_phy_disable
+            // (from esp_phy_init.h) is Espressif's documented way to shut
+            // down the PHY/RF module. Pairs with esp_phy_enable to restore.
+            // Follow with wifi stop/start to re-init the WiFi driver state.
+            // Arbiter does NOT auto-reboot here anymore. The UI layer owns
+            // that decision: leaving the TX_CW sub-screen with g_certTestDirty
+            // true triggers rebootForRadioRelease(). Within the sub-screen
+            // the user is free to start/stop/retune without reboots -- CW
+            // tone's own stop (wifi_tx_tone(0,0,0)) works instantly, and we
+            // don't try to coexist with 802.11 TX from this state.
+            Serial.println("[radio]   (IDLE from cert_test; dirty flag set)");
+        }
         g_radioMode = RADIO_IDLE;
         g_radioChan = 0;
         g_radioBo   = 0;
@@ -376,6 +447,14 @@ static bool radioSwitchMode(uint8_t target, uint8_t chan, uint8_t bo) {
             esp_phy_test_start_stop(3);
             esp_phy_wifi_tx_tone(1, chan, bo);
             break;
+        case RADIO_TX_BT_CW: {
+            int btCh = wifiChToBtCh(chan);
+            Serial.printf("[radio]   bt_tx_tone(1, %d, %d) (WiFi ch %d -> %d MHz)\n",
+                          btCh, bo, chan, 2402 + btCh);
+            esp_phy_test_start_stop(3);
+            esp_phy_bt_tx_tone(1, btCh, bo);
+            break;
+        }
         case RADIO_TX_PKT20:
             // (1) Retune PLL via a brief wifi_tx_tone -- that call verifiably
             //     moves the frequency to the requested channel.
@@ -2045,13 +2124,23 @@ constexpr int kTxStatY = 150;
 constexpr int kTxWarnY = 212;
 
 static void drawTxModeTab() {
-    // Kind selector: 802.11 (raw beacon tight loop) vs TONE (ROM rftest CW)
+    // On the sub-screens the kind is fixed (TX_CW -> tone, TX_80211 -> 802.11)
+    // so we show a single read-only label instead of the KIND selector.
     const int gap = 6;
     const int kw = (320 - 2 * kTxMargin - gap) / 2;
-    drawGlowButton(kTxMargin,                 kTxKindY, kw, kTxKindH,
-                   "802.11", !g_toneSel, 2);
-    drawGlowButton(kTxMargin + kw + gap,      kTxKindY, kw, kTxKindH,
-                   "TONE  (CW experiment)", g_toneSel, 2);
+    if (g_screen == Screen::TX_CW) {
+        drawGlowButton(kTxMargin, kTxKindY, 320 - 2 * kTxMargin, kTxKindH,
+                       "CW / SWEEP", true, 2);
+    } else if (g_screen == Screen::TX_80211) {
+        drawGlowButton(kTxMargin, kTxKindY, 320 - 2 * kTxMargin, kTxKindH,
+                       "802.11 BEACON", true, 2);
+    } else {
+        // Legacy TRANSMIT (hub) rendering fallback -- shouldn't be hit.
+        drawGlowButton(kTxMargin,                 kTxKindY, kw, kTxKindH,
+                       "802.11", !g_toneSel, 2);
+        drawGlowButton(kTxMargin + kw + gap,      kTxKindY, kw, kTxKindH,
+                       "TONE  (CW experiment)", g_toneSel, 2);
+    }
 
     // Big START/STOP toggle button
     const int fx = kTxMargin, fw = 320 - 2 * kTxMargin;
@@ -2097,8 +2186,11 @@ static void drawTxModeTab() {
 }
 
 static bool txModeTouch(int tx, int ty) {
-    // Kind selector row
-    if (ty >= kTxKindY && ty < kTxKindY + kTxKindH) {
+    // Kind selector row -- disabled when inside a sub-screen (TX_CW or
+    // TX_80211). Those screens lock the kind so a stray tap can't flip us
+    // into the other path without going through the Hub reboot flow.
+    if (g_screen != Screen::TX_CW && g_screen != Screen::TX_80211 &&
+        ty >= kTxKindY && ty < kTxKindY + kTxKindH) {
         const int gap = 6;
         const int kw = (320 - 2 * kTxMargin - gap) / 2;
         if (tx >= kTxMargin && tx < kTxMargin + kw) {
@@ -2156,6 +2248,12 @@ constexpr int kTxTuneChRowH   = 22;        // 2 rows → chTop..chTop+2*22+gap
 constexpr int kTxTuneDurY2    = 128, kTxTuneDurH2   = 22;
 constexpr int kTxTunePaceY2   = 158, kTxTunePaceH2  = 22;
 constexpr int kTxTuneDwellY   = 188, kTxTuneDwellH  = 22;
+// New: sweep-dwell slider at the very bottom of the TUNE tab (only shown
+// in SWEEP or BT_SWEEP mode). Minus / bar / plus layout.
+constexpr int kTxSweepDwellY  = 214, kTxSweepDwellH = 22;
+constexpr int kTxDwBtnW       = 36;
+constexpr int kTxDwMinusX     = kTxMargin;
+constexpr int kTxDwPlusX      = 320 - kTxMargin - kTxDwBtnW;
 
 // Channel tile layout: 2 rows x 7 cols (14 slots, use 1-13).
 static void txChTileRect(int ch, int& x, int& y, int& w, int& h) {
@@ -2220,13 +2318,12 @@ static void drawTxTuneTab() {
 
     if (g_toneSel) {
         // TONE mode -- Dur/Pace are irrelevant. Show MODE + PA.
-        // TONE  = pure CW on selected channel (narrow spike on PortaPack)
-        // SWEEP = CW tone swept +/- 2 ch around center (wide w/ ch ctl)
-        // (PKT20 removed from UI -- it couldn't do channel control reliably)
-        const uint16_t modeVals[2] = { 0, 2 };
-        const char*    modeLbls[2] = { "TONE", "SWEEP" };
+        //   TONE  / SWEEP = WiFi radio paths (5 MHz grid)
+        //   BT    / BTSWP = Bluetooth radio paths (1 MHz grid, finer)
+        const uint16_t modeVals[4] = { 0, 2, 3, 4 };
+        const char*    modeLbls[4] = { "TONE", "SWEEP", "BT", "BTSWP" };
         drawChipRow("Mode", kTxTunePaceY2,  kTxTunePaceH2,
-                    modeVals, modeLbls, 2, g_cwMode);
+                    modeVals, modeLbls, 4, g_cwMode);
         const uint16_t paVals[4] = { 0, 20, 40, 80 };            // backoff * 0.25 dB
         const char*    paLbls[4] = { "MAX", "-5dB", "-10dB", "-20dB" };
         drawChipRow("PA",   kTxTuneDurY2,   kTxTuneDurH2,
@@ -2242,13 +2339,44 @@ static void drawTxTuneTab() {
     }
 
     // Dwell row context-dependent:
-    //   TONE + SWEEP mode -> sweep SPAN selector (±1/±2/±3/±4 WiFi ch)
-    //   anything else     -> HOP dwell selector (10/50/200/1000 ms per ch)
+    //   TONE + SWEEP   -> sweep SPAN selector (±1/±2/±3/±4 WiFi ch)
+    //   TONE + BT_SWEEP-> pattern selector (FULL / SPAN / BLE / off)
+    //   anything else  -> HOP dwell selector (10/50/200/1000 ms per ch)
     if (g_toneSel && g_cwMode == 2) {
         const uint16_t spn[4]  = { 1, 2, 3, 4 };
         const char* spnL[4]    = { "±1ch", "±2ch", "±3ch", "±4ch" };
         drawChipRow("Span", kTxTuneDwellY, kTxTuneDwellH,
                     spn, spnL, 4, g_cwSweepSpan);
+    } else if (g_toneSel && g_cwMode == 4) {
+        // BT_SWEEP pattern selector
+        const uint16_t pat[3]  = { 0, 1, 2 };
+        const char* patL[3]    = { "FULL", "SPAN", "BLE" };
+        drawChipRow("Pat", kTxTuneDwellY, kTxTuneDwellH,
+                    pat, patL, 3, g_btSweepPat);
+    }
+    // Sweep-dwell slider (only in SWEEP or BT_SWEEP). Shows below the row above.
+    if (g_toneSel && (g_cwMode == 2 || g_cwMode == 4)) {
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(color::MID, color::BG);
+        char dlab[20]; snprintf(dlab, sizeof(dlab), "Dwell %uus", (unsigned)g_sweepDwellUs);
+        tft.drawString(dlab, kTxMargin, kTxSweepDwellY + kTxSweepDwellH / 2, 2);
+        // minus / bar / plus
+        drawGlowButton(kTxDwMinusX, kTxSweepDwellY, kTxDwBtnW, kTxSweepDwellH, "-", true, 4);
+        drawGlowButton(kTxDwPlusX,  kTxSweepDwellY, kTxDwBtnW, kTxSweepDwellH, "+", true, 4);
+        const int barX = kTxDwMinusX + kTxDwBtnW + 70;    // leave room for label
+        const int barR = kTxDwPlusX - 8;
+        const int barW = barR - barX;
+        if (barW > 10) {
+            tft.drawRect(barX, kTxSweepDwellY + 6, barW, kTxSweepDwellH - 12, color::MID);
+            uint32_t range = kSweepMaxDwellUs - kSweepMinDwellUs;
+            uint32_t rel   = (g_sweepDwellUs > kSweepMinDwellUs)
+                           ? (g_sweepDwellUs - kSweepMinDwellUs) : 0;
+            int filled = (int)((rel * (barW - 2)) / range);
+            if (filled > 0) {
+                tft.fillRect(barX + 1, kTxSweepDwellY + 7, filled,
+                             kTxSweepDwellH - 14, color::OK_GREEN);
+            }
+        }
     } else {
         const uint16_t dwl[4]  = { 10, 50, 200, 1000 };
         const char* dwlL[4]    = { "10ms", "50ms", "200ms", "1s" };
@@ -2312,13 +2440,13 @@ static bool txTuneTouch(int tx, int ty) {
                 }
             }
         }
-        // Mode row (replaces Pace in TONE mode): TONE / SWEEP
+        // Mode row (replaces Pace in TONE mode): TONE / SWEEP / BT / BTSWP
         if (ty >= kTxTunePaceY2 && ty < kTxTunePaceY2 + kTxTunePaceH2) {
-            const uint8_t modeVals[2] = { 0, 2 };    // TONE=0, SWEEP=2
-            int chipW2 = (chipRight - chipLeft - chipGap) / 2;
-            for (int i = 0; i < 2; i++) {
-                int x = chipLeft + i * (chipW2 + chipGap);
-                if (tx >= x && tx < x + chipW2) {
+            const uint8_t modeVals[4] = { 0, 2, 3, 4 };
+            int chipW4 = (chipRight - chipLeft - 3 * chipGap) / 4;
+            for (int i = 0; i < 4; i++) {
+                int x = chipLeft + i * (chipW4 + chipGap);
+                if (tx >= x && tx < x + chipW4) {
                     uint8_t newMode = modeVals[i];
                     if (newMode != g_cwMode) {
                         if (g_cwActive) g_cwReqStop = true;
@@ -2336,7 +2464,7 @@ static bool txTuneTouch(int tx, int ty) {
         if (hitRow(kTxTunePaceY2, kTxTunePaceH2, pcs,  4, (volatile uint16_t*)&g_txIntervalUs))
             return true;
     }
-    // Dwell row routes to SPAN in SWEEP mode, HOP dwell otherwise.
+    // Dwell row routes to SPAN in WiFi SWEEP, PATTERN in BT_SWEEP, HOP dwell otherwise.
     if (g_toneSel && g_cwMode == 2) {
         const uint16_t spn[4]  = { 1, 2, 3, 4 };
         if (ty >= kTxTuneDwellY && ty < kTxTuneDwellY + kTxTuneDwellH) {
@@ -2348,7 +2476,48 @@ static bool txTuneTouch(int tx, int ty) {
                 }
             }
         }
-    } else {
+    } else if (g_toneSel && g_cwMode == 4) {
+        if (ty >= kTxTuneDwellY && ty < kTxTuneDwellY + kTxTuneDwellH) {
+            int chipW3 = (chipRight - chipLeft - 2 * chipGap) / 3;
+            for (int i = 0; i < 3; i++) {
+                int x = chipLeft + i * (chipW3 + chipGap);
+                if (tx >= x && tx < x + chipW3) {
+                    g_btSweepPat = (uint8_t)i;
+                    return true;
+                }
+            }
+        }
+    }
+    // Sweep-dwell slider -/+ taps (SWEEP or BT_SWEEP only)
+    if (g_toneSel && (g_cwMode == 2 || g_cwMode == 4) &&
+        ty >= kTxSweepDwellY && ty < kTxSweepDwellY + kTxSweepDwellH) {
+        if (tx >= kTxDwMinusX && tx < kTxDwMinusX + kTxDwBtnW) {
+            int next = (int)g_sweepDwellUs - 50;
+            if (next < (int)kSweepMinDwellUs) next = kSweepMinDwellUs;
+            g_sweepDwellUs = (uint16_t)next;
+            return true;
+        }
+        if (tx >= kTxDwPlusX && tx < kTxDwPlusX + kTxDwBtnW) {
+            int next = (int)g_sweepDwellUs + 50;
+            if (next > (int)kSweepMaxDwellUs) next = kSweepMaxDwellUs;
+            g_sweepDwellUs = (uint16_t)next;
+            return true;
+        }
+        // Tap on bar jumps to that position
+        const int barX = kTxDwMinusX + kTxDwBtnW + 70;
+        const int barR = kTxDwPlusX - 8;
+        const int barW = barR - barX;
+        if (tx >= barX && tx < barR && barW > 10) {
+            uint32_t range = kSweepMaxDwellUs - kSweepMinDwellUs;
+            uint32_t rel   = (uint32_t)(tx - barX) * range / (uint32_t)(barW - 2);
+            int next = (int)(kSweepMinDwellUs + rel);
+            if (next < (int)kSweepMinDwellUs) next = kSweepMinDwellUs;
+            if (next > (int)kSweepMaxDwellUs) next = kSweepMaxDwellUs;
+            g_sweepDwellUs = (uint16_t)next;
+            return true;
+        }
+    }
+    {
         const uint16_t dwl[4]  = { 10, 50, 200, 1000 };
         if (hitRow(kTxTuneDwellY, kTxTuneDwellH, dwl,  4,
                    (volatile uint16_t*)&g_txHopDwellMs))
@@ -2357,15 +2526,103 @@ static bool txTuneTouch(int tx, int ty) {
     return false;
 }
 
-static void drawTransmitScreen() {
+// ---------------------------------------------------------------------------
+// TRANSMIT hub screen: two big buttons picking CW/SWEEP vs 802.11 sub-screens.
+// Each sub-screen is the existing MODE+TUNE tab UI with its half of the
+// controls (TONE-related in TX_CW, beacon-related in TX_80211).
+// ---------------------------------------------------------------------------
+// Hub button geometry
+constexpr int kHubTop     = 55;
+constexpr int kHubGap     = 10;
+constexpr int kHubBtnH    = 100;
+constexpr int kHubBtnW    = (320 - 2 * kTxMargin - kHubGap) / 2;
+
+static void drawTxHubScreen() {
+    tft.fillScreen(color::BG);
+    drawCornerHome();
+    drawGlowTitle("TRANSMIT", tft.width() / 2, 20, 4);
+
+    // Two choice tiles
+    const int lx = kTxMargin;
+    const int rx = kTxMargin + kHubBtnW + kHubGap;
+    drawGlowButton(lx, kHubTop, kHubBtnW, kHubBtnH, "", true, 4);
+    drawGlowButton(rx, kHubTop, kHubBtnW, kHubBtnH, "", true, 4);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(color::OK_GREEN, color::BG);
+    tft.drawString("CW / SWEEP", lx + kHubBtnW / 2, kHubTop + 30, 4);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString("carrier wave",  lx + kHubBtnW / 2, kHubTop + 56, 2);
+    tft.drawString("chan-select",   lx + kHubBtnW / 2, kHubTop + 72, 2);
+    tft.setTextColor(color::OK_GREEN, color::BG);
+    tft.drawString("802.11",        rx + kHubBtnW / 2, kHubTop + 30, 4);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString("beacon flood",  rx + kHubBtnW / 2, kHubTop + 56, 2);
+    tft.drawString("ch 1-13 / hop", rx + kHubBtnW / 2, kHubTop + 72, 2);
+
+    // Warning strip
+    tft.setTextColor(color::WARN_AMBER, color::BG);
+    tft.drawString("switching between paths restarts the radio (~2 sec)",
+                   tft.width() / 2, kHubTop + kHubBtnH + 18, 1);
+}
+
+static void persistBootDest(uint8_t dest);          // fwd decl
+
+static bool txHubTouch(int tx, int ty) {
+    if (ty < kHubTop || ty >= kHubTop + kHubBtnH) return false;
+    const int lx = kTxMargin;
+    const int rx = kTxMargin + kHubBtnW + kHubGap;
+    if (tx >= lx && tx < lx + kHubBtnW) {
+        g_toneSel = true;
+        g_screen  = Screen::TX_CW;
+        persistBootDest(2);
+        return true;
+    }
+    if (tx >= rx && tx < rx + kHubBtnW) {
+        g_toneSel = false;
+        g_screen  = Screen::TX_80211;
+        persistBootDest(3);
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Splash + ESP.restart used when leaving TX_CW with g_certTestDirty set.
+// cert_test's rftest_init allocates phy buffers that have no deinit path;
+// only a full reboot releases them. See signalhound-cyd memory for details.
+// ---------------------------------------------------------------------------
+static void drawRebootSplash() {
+    tft.fillScreen(color::BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(color::OK_GREEN, color::BG);
+    tft.drawString("Clearing radio state", tft.width() / 2, tft.height() / 2 - 20, 4);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString("~2 seconds", tft.width() / 2, tft.height() / 2 + 12, 2);
+    tft.setTextColor(color::DIM, color::BG);
+    tft.drawString(".  .  .  .", tft.width() / 2, tft.height() / 2 + 40, 2);
+}
+static void rebootForRadioRelease(uint8_t landOn) {
+    persistBootDest(landOn);
+    drawRebootSplash();
+    delay(400);                                  // let the splash be seen
+    Serial.println("[sh] REBOOT: releasing cert_test phy buffers");
+    delay(50);                                   // flush serial
+    ESP.restart();
+}
+
+// ---------------------------------------------------------------------------
+// TX_CW sub-screen: existing MODE/TUNE tab UI, forced to TONE mode selector.
+// Back button triggers rebootForRadioRelease if cert_test was used.
+// ---------------------------------------------------------------------------
+static void drawTxCwScreen() {
     tft.fillScreen(color::BG);
     drawCornerBack();
     drawTxTabBar();
+    g_toneSel = true;                            // this sub-screen IS tone
     if (g_txTab == TxTab::MODE) drawTxModeTab();
     else                        drawTxTuneTab();
 }
-
-static bool transmitTouch(int tx, int ty) {
+static bool txCwTouch(int tx, int ty) {
     TxTab which;
     if (inTxTabBar(tx, ty, which)) {
         if (which != g_txTab) { g_txTab = which; return true; }
@@ -2373,6 +2630,31 @@ static bool transmitTouch(int tx, int ty) {
     }
     return (g_txTab == TxTab::MODE) ? txModeTouch(tx, ty) : txTuneTouch(tx, ty);
 }
+
+// ---------------------------------------------------------------------------
+// TX_80211 sub-screen: existing UI, forced to 802.11 beacon mode.
+// Back button goes straight to Hub -- 802.11 doesn't dirty cert_test.
+// ---------------------------------------------------------------------------
+static void drawTx80211Screen() {
+    tft.fillScreen(color::BG);
+    drawCornerBack();
+    drawTxTabBar();
+    g_toneSel = false;                           // this sub-screen IS 802.11
+    if (g_txTab == TxTab::MODE) drawTxModeTab();
+    else                        drawTxTuneTab();
+}
+static bool tx80211Touch(int tx, int ty) {
+    TxTab which;
+    if (inTxTabBar(tx, ty, which)) {
+        if (which != g_txTab) { g_txTab = which; return true; }
+        return false;
+    }
+    return (g_txTab == TxTab::MODE) ? txModeTouch(tx, ty) : txTuneTouch(tx, ty);
+}
+
+// Legacy entry point -- the old TRANSMIT screen is now the Hub.
+static void drawTransmitScreen() { drawTxHubScreen(); }
+static bool transmitTouch(int tx, int ty) { return txHubTouch(tx, ty); }
 
 // ----------------------------------------------------------------------------
 // SETTINGS screen: brightness + touch recal + factory reset.
@@ -2497,6 +2779,8 @@ static void renderCurrentScreen() {
         case Screen::TUNE:     drawTune();              break;
         case Screen::TRIGGER:  drawTriggerScreen();     break;
         case Screen::TRANSMIT: drawTransmitScreen();    break;
+        case Screen::TX_CW:    drawTxCwScreen();        break;
+        case Screen::TX_80211: drawTx80211Screen();     break;
         case Screen::SETTINGS: drawSettingsScreen();    break;
         default:               drawPlaceholder(g_screen); break;
     }
@@ -2520,13 +2804,30 @@ static bool handleTouchOnce() {
         }
     } else {
         if (inCornerHome(x, y)) {
-            // Corner button -- on tabbed hubs this means "Back" to wherever
-            // we came from; on every other screen it still means Home.
+            // Corner button -- behavior depends on which screen we're on.
+            if (g_screen == Screen::TX_CW) {
+                // Back from CW/SWEEP. If cert_test was used this session,
+                // reboot to release phy buffers before landing anywhere.
+                if (g_certTestDirty) {
+                    rebootForRadioRelease(1);     // land on TRANSMIT hub
+                    return true;                   // (unreachable, restart)
+                }
+                g_screen = Screen::TRANSMIT;
+                persistBootDest(1);
+                return true;
+            }
+            if (g_screen == Screen::TX_80211) {
+                g_screen = Screen::TRANSMIT;
+                persistBootDest(1);
+                return true;
+            }
             if (g_screen == Screen::TUNE || g_screen == Screen::TRANSMIT) {
                 g_screen = g_prevScreen;
-            } else {
-                g_screen = Screen::HOME;
+                if (g_screen == Screen::HOME) persistBootDest(0);
+                return true;
             }
+            g_screen = Screen::HOME;
+            persistBootDest(0);
             return true;
         }
         if (g_screen == Screen::LIVE && inLiveTune(x, y)) {
@@ -2565,6 +2866,14 @@ static bool handleTouchOnce() {
             g_cfgDirty = true;
             return true;
         }
+        if (g_screen == Screen::TX_CW && txCwTouch(x, y)) {
+            g_cfgDirty = true;
+            return true;
+        }
+        if (g_screen == Screen::TX_80211 && tx80211Touch(x, y)) {
+            g_cfgDirty = true;
+            return true;
+        }
     }
     return false;
 }
@@ -2591,6 +2900,7 @@ static void loadConfig() {
     g_trigThreshold = p.getUChar ("trigTh", g_trigThreshold);
     g_trigBand      = (TrigBand)p.getUChar("trigBd", (uint8_t)g_trigBand);
     g_brightness    = p.getUChar ("bright", g_brightness);
+    g_bootDest      = p.getUChar ("tx_boot", 0);
     p.end();
     Serial.printf("[sh] cfg loaded: ch=%u span=%u fftN=%u agc=%d gain=%u "
                   "trigEn=%d trigTh=%u trigBd=%u bright=%u\n",
@@ -2620,10 +2930,23 @@ static void saveConfig() {
     p.putUChar ("trigTh", g_trigThreshold);
     p.putUChar ("trigBd", (uint8_t)g_trigBand);
     p.putUChar ("bright", g_brightness);
+    p.putUChar ("tx_boot", g_bootDest);
     p.end();
     g_cfgDirty      = false;
     g_cfgLastSaveMs = millis();
     Serial.println("[sh] cfg saved");
+}
+
+// Persist boot-destination immediately (independent of the periodic cfg save)
+// so a crash or auto-reboot still lands the user back where they were.
+static void persistBootDest(uint8_t dest) {
+    if (dest == g_bootDest) return;
+    g_bootDest = dest;
+    Preferences p;
+    if (p.begin(kCfgNamespace, false)) {
+        p.putUChar("tx_boot", dest);
+        p.end();
+    }
 }
 
 static void uiTask(void*) {
@@ -2705,18 +3028,28 @@ void setup() {
 
     xTaskCreatePinnedToCore(rfTask, "rf", 8192, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(uiTask, "ui", 8192, nullptr, 1, nullptr, 1);
-    // cwTask MUST be on Core 1 (NOT Core 0 with the other radio tasks)
-    // because cert_test's inter-task messaging to Espressif's internal
-    // "wifi" task (which runs on Core 0 at prio 23) deadlocks / heap-
-    // corrupts when the caller is also on Core 0. This is a specific
-    // Espressif constraint for cert_test calls; general radio tasks
-    // (rfTask, 802.11 TX) stay on Core 0 as normal.
-    // 8192 stack because esp_phy_rftest_init is deep-call.
+    // cwTask MUST be on Core 1. Retested on Core 0 after PKT20 removal
+    // (2026-10-10): rftest_init still hangs there, confirming the crash is
+    // from cert_test's inter-task messaging to Espressif's wifi task
+    // (prio 23, Core 0) racing with any caller sharing Core 0.
+    // Priority 1 round-robins with uiTask; the SWEEP loop yields every
+    // kYieldEvery steps so UI stays responsive.
     xTaskCreatePinnedToCore(cwTask, "cw", 8192, nullptr, 1, nullptr, 1);
     Serial.println("[sh] tasks launched; UI on core 1, RF stub on core 0");
     // Note: cert_test init (esp_phy_rftest_init) is deferred to cwTask's
     // first IDLE->TX transition. Called from setup() it hung the boot
     // sequence waiting on the wifi task.
+
+    // Honor persisted boot-destination so a cert_test-release reboot (or a
+    // manual power cycle) lands the user back on the last-used Transmit
+    // sub-screen instead of HOME. 0=HOME, 1=TRANSMIT hub, 2=TX_CW, 3=TX_80211.
+    switch (g_bootDest) {
+        case 1: g_screen = Screen::TRANSMIT; g_prevScreen = Screen::HOME; break;
+        case 2: g_screen = Screen::TX_CW;    g_prevScreen = Screen::TRANSMIT; g_toneSel = true;  break;
+        case 3: g_screen = Screen::TX_80211; g_prevScreen = Screen::TRANSMIT; g_toneSel = false; break;
+        default: break;
+    }
+    Serial.printf("[sh] boot dest = %u (%s)\n", g_bootDest, kScreenName[(int)g_screen]);
 
     // --- Phase 2.0: bring up the ESP-SDR receive stack ---
     // Deliberately after tasks launch so the UI is responsive even if the
@@ -2758,6 +3091,8 @@ extern "C" {
     void esp_phy_rftest_init(void);
     void esp_phy_rftest_config(unsigned char);
     void esp_phy_wifi_tx_tone(int start, int chan, int backoff);
+    // BT CW tone. channel = BT channel index 0..78 (BT_ch_N = 2402 + N MHz).
+    // Covers 2402-2480 MHz at 1 MHz steps -- finer than WiFi's 5 MHz grid.
     void esp_phy_bt_tx_tone(int start, int chan, int backoff);
     void esp_phy_test_start_stop(unsigned char value);
     void chip_v7_set_chan_nomac(int, int);
@@ -3070,17 +3405,23 @@ void cwTask(void*) {
             } else {
                 uint8_t ch     = g_cwReqCh;
                 uint8_t bo     = g_cwReqBo;
-                // Mode 2 SWEEP uses the CW tone path (we drive the retunes
-                // in the main loop above). Modes 0/1 map directly.
-                uint8_t target = (g_cwMode == 1) ? RADIO_TX_PKT20 : RADIO_TX_CW;
+                // Modes 3 (BT) and 4 (BT_SWEEP) both enter via RADIO_TX_BT_CW
+                // -- mode 4 just drives rapid bt_chan_change retunes from
+                // the main loop (handled below). Mode 2 (SWEEP) same for CW.
+                uint8_t target;
+                if      (g_cwMode == 1) target = RADIO_TX_PKT20;
+                else if (g_cwMode == 3) target = RADIO_TX_BT_CW;
+                else if (g_cwMode == 4) target = RADIO_TX_BT_CW;
+                else                    target = RADIO_TX_CW;
                 g_cwActive     = true;
                 vTaskDelay(pdMS_TO_TICKS(30));
                 if (radioSwitchMode(target, ch, bo)) {
-                    g_cwHopCurCh  = ch;
-                    g_cwSweepLast = millis();
-                    g_cwSweepPos  = 0;
-                    g_txRunning   = true;
-                    lastHopMs     = millis();
+                    g_cwHopCurCh    = ch;
+                    g_cwSweepLast   = millis();
+                    g_cwSweepPos    = 0;
+                    g_txRunning     = true;
+                    g_certTestDirty = true;    // need reboot before 802.11
+                    lastHopMs       = millis();
                 } else {
                     g_cwActive = false;
                     Serial.println("[tx] radioSwitchMode FAILED");
@@ -3117,6 +3458,38 @@ void cwTask(void*) {
         // started by the arbiter; we only need to hammer the PLL retune
         // here. Each inner iteration = ~500 us, 50 iters per batch = 25 ms
         // before we yield. That gives UI/other tasks a 1 ms slot every batch.
+        // BT_SWEEP mode: tight loop of bt_chan_change at microsecond rate.
+        // Pattern 0 (FULL) covers 2402-2480. Pattern 1 (SPAN) sweeps ±N MHz
+        // around the WiFi ch center. Pattern 2 (BLE_ADV) hits 0/24/78 only.
+        if (g_cwActive && g_cwMode == 4 && !g_cwHop) {
+            int pattern  = g_btSweepPat;
+            int centerBt = wifiChToBtCh((int)g_cwReqCh);
+            int lo = 0, hi = 78;
+            if (pattern == 1) {
+                int sp = g_cwSweepSpan;    // span in "channels" -- for BT = MHz
+                if (sp < 1) sp = 1;
+                if (sp > 20) sp = 20;
+                lo = centerBt - sp;  if (lo < 0)  lo = 0;
+                hi = centerBt + sp;  if (hi > 78) hi = 78;
+            }
+            // BLE_ADV uses fixed array
+            static const uint8_t bleAdv[3] = { 0, 24, 78 };
+            int cycleLen = (pattern == 2) ? 3 : (hi - lo + 1);
+            uint32_t dwellUs = g_sweepDwellUs;
+            if (dwellUs < kSweepMinDwellUs) dwellUs = kSweepMinDwellUs;
+            if (dwellUs > kSweepMaxDwellUs) dwellUs = kSweepMaxDwellUs;
+            for (int i = 0; i < kYieldEvery; i++) {
+                g_cwSweepPos = (int8_t)((g_cwSweepPos + 1) % cycleLen);
+                int bch = (pattern == 2) ? (int)bleAdv[g_cwSweepPos]
+                                         : (lo + g_cwSweepPos);
+                bt_chan_change(bch);
+                delayMicroseconds(dwellUs);
+                if (g_cwReqStop) break;
+            }
+            g_cwHits++;
+            vTaskDelay(1);
+            continue;
+        }
         if (g_cwActive && g_cwMode == 2) {
             // SWEEP mode -- works solo OR combined with HOP:
             //   HOP OFF: ±span around g_cwReqCh (one wide block)
@@ -3138,6 +3511,9 @@ void cwTask(void*) {
                 nHops = 1;
             }
             int cycleLen = nHops * (2 * span + 1);
+            uint32_t dwellUs = g_sweepDwellUs;
+            if (dwellUs < kSweepMinDwellUs) dwellUs = kSweepMinDwellUs;
+            if (dwellUs > kSweepMaxDwellUs) dwellUs = kSweepMaxDwellUs;
             for (int i = 0; i < kYieldEvery; i++) {
                 g_cwSweepPos = (int8_t)((g_cwSweepPos + 1) % cycleLen);
                 int hopIdx     = g_cwSweepPos / (2 * span + 1);
@@ -3146,7 +3522,7 @@ void cwTask(void*) {
                 if (ch < 1)  ch = 1;
                 if (ch > 13) ch = 13;
                 chip_v7_set_chan_nomac(ch, 0);
-                delayMicroseconds(kSweepDwellUs);
+                delayMicroseconds(dwellUs);
                 if (g_cwReqStop) break;
             }
             g_cwHits++;
