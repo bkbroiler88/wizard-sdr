@@ -90,9 +90,11 @@ enum class Screen : uint8_t {
     DECODING,
     FINDING,
     TUNE,         // tabbed: TUNE | GAIN (see g_tuneTab)
-    TRANSMIT,     // hub: picks CW vs 802.11 sub-screen
+    TRANSMIT,     // hub: picks CW vs 802.11 vs Morse vs Hop sub-screen
     TX_CW,        // sub-screen: CW tone + SWEEP (cert_test path)
     TX_80211,     // sub-screen: 802.11 beacon TX
+    TX_MORSE,     // sub-screen: Morse CW keyer (ham-ready)
+    TX_HOP,       // sub-screen: FHSS reference emitter
     SETTINGS,
     _COUNT
 };
@@ -149,7 +151,7 @@ constexpr uint32_t kHopCycleDwellMs = 300;
 static const char* const kScreenName[] = {
     "HOME", "LIVE", "TRIGGER", "RECORD", "CAPTURES",
     "DECODING", "FINDING", "TUNE", "TRANSMIT",
-    "TX_CW", "TX_80211", "SETTINGS",
+    "TX_CW", "TX_80211", "TX_MORSE", "TX_HOP", "SETTINGS",
 };
 
 // ----------------------------------------------------------------------------
@@ -3908,56 +3910,71 @@ static bool txTuneTouch(int tx, int ty) {
 // Each sub-screen is the existing MODE+TUNE tab UI with its half of the
 // controls (TONE-related in TX_CW, beacon-related in TX_80211).
 // ---------------------------------------------------------------------------
-// Hub button geometry
-constexpr int kHubTop     = 55;
-constexpr int kHubGap     = 10;
-constexpr int kHubBtnH    = 100;
+// Hub button geometry -- 2x2 grid of tiles.
+constexpr int kHubTop     = 44;
+constexpr int kHubGap     = 8;
+constexpr int kHubBtnH    = 84;
 constexpr int kHubBtnW    = (320 - 2 * kTxMargin - kHubGap) / 2;
+constexpr int kHubRow2    = kHubTop + kHubBtnH + kHubGap;
+
+// Tile color per TX mode: green = benign CW, amber = ham-licensed Morse,
+// cyan = self-test/experimental.
+struct TxHubTile {
+    const char*  big;        // top-row label (title case, size 4)
+    const char*  sub1;       // one-liner subtitle
+    const char*  sub2;       // optional second subtitle
+    uint16_t     tint;       // body color for big label
+    Screen       dest;       // sub-screen on tap
+    uint8_t      bootId;     // persisted boot-dest id (0 = don't persist)
+    bool         isCertTest; // sets g_toneSel + flags path appropriately
+    bool         toneSel;    // forwarded to g_toneSel on tap (CW path only)
+};
+
+static const TxHubTile kHubTiles[4] = {
+    { "CW",     "tone/sweep",   "cert_test",   color::OK_GREEN,    Screen::TX_CW,    2, true,  true  },
+    { "802.11", "beacon flood", "ch 1-13 hop", color::OK_GREEN,    Screen::TX_80211, 3, true,  false },
+    { "Morse",  "CW keyer",     "ham 13 cm",   color::WARN_AMBER,  Screen::TX_MORSE, 4, false, false },
+    { "Hop",    "FHSS test",    "self-check",  color::BRIGHT,      Screen::TX_HOP,   5, false, false },
+};
+
+static void drawTxHubTile(int idx) {
+    const TxHubTile& t = kHubTiles[idx];
+    const int lx = kTxMargin;
+    const int rx = kTxMargin + kHubBtnW + kHubGap;
+    int x = (idx & 1) ? rx : lx;
+    int y = (idx & 2) ? kHubRow2 : kHubTop;
+    drawGlowButton(x, y, kHubBtnW, kHubBtnH, "", true, 3);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(t.tint, color::BG);
+    tft.drawString(t.big, x + kHubBtnW / 2, y + 24, 4);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString(t.sub1, x + kHubBtnW / 2, y + 50, 2);
+    if (t.sub2 && t.sub2[0]) {
+        tft.drawString(t.sub2, x + kHubBtnW / 2, y + 66, 2);
+    }
+}
 
 static void drawTxHubScreen() {
     tft.fillScreen(color::BG);
     drawCornerHome();
     drawGlowTitle("TRANSMIT", tft.width() / 2, 20, 4);
-
-    // Two choice tiles
-    const int lx = kTxMargin;
-    const int rx = kTxMargin + kHubBtnW + kHubGap;
-    drawGlowButton(lx, kHubTop, kHubBtnW, kHubBtnH, "", true, 4);
-    drawGlowButton(rx, kHubTop, kHubBtnW, kHubBtnH, "", true, 4);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(color::OK_GREEN, color::BG);
-    tft.drawString("CW / SWEEP", lx + kHubBtnW / 2, kHubTop + 30, 4);
-    tft.setTextColor(color::MID, color::BG);
-    tft.drawString("carrier wave",  lx + kHubBtnW / 2, kHubTop + 56, 2);
-    tft.drawString("chan-select",   lx + kHubBtnW / 2, kHubTop + 72, 2);
-    tft.setTextColor(color::OK_GREEN, color::BG);
-    tft.drawString("802.11",        rx + kHubBtnW / 2, kHubTop + 30, 4);
-    tft.setTextColor(color::MID, color::BG);
-    tft.drawString("beacon flood",  rx + kHubBtnW / 2, kHubTop + 56, 2);
-    tft.drawString("ch 1-13 / hop", rx + kHubBtnW / 2, kHubTop + 72, 2);
-
-    // Warning strip
-    tft.setTextColor(color::WARN_AMBER, color::BG);
-    tft.drawString("switching between paths restarts the radio (~2 sec)",
-                   tft.width() / 2, kHubTop + kHubBtnH + 18, 1);
+    for (int i = 0; i < 4; i++) drawTxHubTile(i);
 }
 
 static void persistBootDest(uint8_t dest);          // fwd decl
 
 static bool txHubTouch(int tx, int ty) {
-    if (ty < kHubTop || ty >= kHubTop + kHubBtnH) return false;
     const int lx = kTxMargin;
     const int rx = kTxMargin + kHubBtnW + kHubGap;
-    if (tx >= lx && tx < lx + kHubBtnW) {
-        g_toneSel = true;
-        g_screen  = Screen::TX_CW;
-        persistBootDest(2);
-        return true;
-    }
-    if (tx >= rx && tx < rx + kHubBtnW) {
-        g_toneSel = false;
-        g_screen  = Screen::TX_80211;
-        persistBootDest(3);
+    for (int i = 0; i < 4; i++) {
+        int x = (i & 1) ? rx : lx;
+        int y = (i & 2) ? kHubRow2 : kHubTop;
+        if (tx < x || tx >= x + kHubBtnW) continue;
+        if (ty < y || ty >= y + kHubBtnH) continue;
+        const TxHubTile& t = kHubTiles[i];
+        if (t.isCertTest) g_toneSel = t.toneSel;
+        g_screen = t.dest;
+        if (t.bootId) persistBootDest(t.bootId);
         return true;
     }
     return false;
@@ -4032,6 +4049,152 @@ static bool tx80211Touch(int tx, int ty) {
 // Legacy entry point -- the old TRANSMIT screen is now the Hub.
 static void drawTransmitScreen() { drawTxHubScreen(); }
 static bool transmitTouch(int tx, int ty) { return txHubTouch(tx, ty); }
+
+// ---------------------------------------------------------------------------
+// MORSE sub-screen: ham-ready CW keyer. 4 preset messages + WPM/channel
+// steppers + GO/STOP. Backend is txOokMorse() from src/tx_ook.cpp.
+// ---------------------------------------------------------------------------
+static uint8_t  g_morseWpm      = 15;        // 5..30
+static uint8_t  g_morseChan     = 1;         // WiFi 1..14
+static uint8_t  g_morseLastSent = 0;         // index 0..3
+static char     g_morseCall[12] = "DE K1XYZ";  // overwritten by Settings
+static const char* kMorsePresetsStatic[4] = {
+    "CQ CQ CQ DE K1XYZ",
+    "TEST TEST",
+    "73 TU EE",
+    "VVV VVV K1XYZ BEACON",
+};
+
+static constexpr int kMorseBack  = 10;
+static constexpr int kMorsePresetY = 54;
+static constexpr int kMorsePresetH = 32;
+static constexpr int kMorsePresetGap = 4;
+static constexpr int kMorseStepperY  = 134;
+static constexpr int kMorseStatusY   = 180;
+static constexpr int kMorseGoY       = 200;
+static constexpr int kMorseGoH       = 32;
+
+static int morseChanFreqMhz(uint8_t ch) {
+    if (ch == 14) return 2484;
+    return 2407 + 5 * ch;
+}
+
+static void drawMorseScreen() {
+    tft.fillScreen(color::BG);
+    drawCornerBack();
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(color::WARN_AMBER, color::BG);
+    tft.drawString("MORSE CW", tft.width() / 2, 20, 4);
+
+    // header: ch + freq + WPM + dit
+    char hdr[48];
+    int dit = 1200 / g_morseWpm;
+    snprintf(hdr, sizeof(hdr), "ch %u  %d MHz    WPM %u  dit %d ms",
+             (unsigned)g_morseChan, morseChanFreqMhz(g_morseChan),
+             (unsigned)g_morseWpm, dit);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString(hdr, tft.width() / 2, 40, 2);
+
+    // 4 preset tiles in a 2x2 grid
+    const int px0 = kMorseBack;
+    const int px1 = kMorseBack + (tft.width() - 2 * kMorseBack - kMorsePresetGap) / 2 + kMorsePresetGap;
+    const int pw  = (tft.width() - 2 * kMorseBack - kMorsePresetGap) / 2;
+    for (int i = 0; i < 4; i++) {
+        int x = (i & 1) ? px1 : px0;
+        int y = kMorsePresetY + (i & 2 ? (kMorsePresetH + kMorsePresetGap) : 0) / 2 * ((kMorsePresetH + kMorsePresetGap) / ((kMorsePresetH + kMorsePresetGap) / 2));
+        // simpler row layout: two columns, two rows
+        y = kMorsePresetY + ((i >> 1) * (kMorsePresetH + kMorsePresetGap));
+        bool sel = (g_morseLastSent == (uint8_t)i);
+        drawGlowButton(x, y, pw, kMorsePresetH, "", sel, 2);
+        tft.setTextColor(sel ? color::WARN_AMBER : color::BRIGHT, color::BG);
+        tft.drawString(kMorsePresetsStatic[i], x + pw / 2, y + kMorsePresetH / 2, 2);
+    }
+
+    // WPM steppers (left) + CHAN steppers (right)
+    auto drawStepper = [](int x, int y, const char* lbl, int val, uint16_t tint) {
+        drawGlowButton(x,       y, 32, 28, "-", false, 1);
+        drawGlowButton(x + 108, y, 32, 28, "+", false, 1);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(tint, color::BG);
+        tft.drawString(lbl, x + 70, y + 10, 2);
+        char v[8]; snprintf(v, sizeof(v), "%d", val);
+        tft.setTextColor(color::OK_GREEN, color::BG);
+        tft.drawString(v, x + 70, y + 24, 2);
+    };
+    drawStepper(10,  kMorseStepperY, "WPM",  g_morseWpm,  color::MID);
+    drawStepper(170, kMorseStepperY, "CHAN", g_morseChan, color::MID);
+
+    // Status
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color::MID, color::BG);
+    bool active = txOokIsActive();
+    tft.drawString(active ? "SENDING..." : "IDLE", 12, kMorseStatusY + 6, 2);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString(active ? "tap STOP" : "pick a preset to send",
+                   tft.width() - 12, kMorseStatusY + 6, 2);
+
+    // GO / STOP button
+    tft.setTextDatum(MC_DATUM);
+    bool isStop = active;
+    drawGlowButton(10, kMorseGoY, tft.width() - 20, kMorseGoH, "",
+                   true, 2);
+    tft.setTextColor(isStop ? color::ALERT_RED : color::OK_GREEN, color::BG);
+    tft.drawString(isStop ? "STOP" : "SEND",
+                   tft.width() / 2, kMorseGoY + kMorseGoH / 2, 4);
+}
+
+static bool morseTouch(int tx, int ty) {
+    // Preset grid
+    const int px0 = kMorseBack;
+    const int px1 = kMorseBack + (tft.width() - 2 * kMorseBack - kMorsePresetGap) / 2 + kMorsePresetGap;
+    const int pw  = (tft.width() - 2 * kMorseBack - kMorsePresetGap) / 2;
+    for (int i = 0; i < 4; i++) {
+        int x = (i & 1) ? px1 : px0;
+        int y = kMorsePresetY + ((i >> 1) * (kMorsePresetH + kMorsePresetGap));
+        if (tx >= x && tx < x + pw && ty >= y && ty < y + kMorsePresetH) {
+            g_morseLastSent = i;
+            txOokStop();                 // flush anything in flight
+            delay(30);
+            txOokMorse(kMorsePresetsStatic[i], g_morseWpm, g_morseChan, 0);
+            return true;
+        }
+    }
+    // WPM steppers
+    if (ty >= kMorseStepperY && ty < kMorseStepperY + 28) {
+        if (tx >= 10 && tx < 42)        { if (g_morseWpm > 5) g_morseWpm--;  return true; }
+        if (tx >= 118 && tx < 150)      { if (g_morseWpm < 30) g_morseWpm++; return true; }
+        if (tx >= 170 && tx < 202)      { if (g_morseChan > 1) g_morseChan--; return true; }
+        if (tx >= 278 && tx < 310)      { if (g_morseChan < 14) g_morseChan++; return true; }
+    }
+    // GO / STOP
+    if (ty >= kMorseGoY && ty < kMorseGoY + kMorseGoH && tx >= 10 && tx < tft.width() - 10) {
+        if (txOokIsActive()) {
+            txOokStop();
+        } else {
+            txOokMorse(kMorsePresetsStatic[g_morseLastSent], g_morseWpm, g_morseChan, 0);
+        }
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// HOP sub-screen: FHSS reference emitter stub. Full implementation to follow;
+// for now shows "Coming soon" so the tile is tappable without a dead end.
+// ---------------------------------------------------------------------------
+static void drawHopScreen() {
+    tft.fillScreen(color::BG);
+    drawCornerBack();
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(color::BRIGHT, color::BG);
+    tft.drawString("HOP test", tft.width() / 2, 20, 4);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString("FHSS reference emitter", tft.width() / 2, 110, 2);
+    tft.drawString("coming soon", tft.width() / 2, 132, 2);
+    tft.setTextColor(color::DIM, color::BG);
+    tft.drawString("CLI preview: pll_chan + tx_cw", tft.width() / 2, 180, 1);
+}
+static bool hopTouch(int /*tx*/, int /*ty*/) { return false; }
 
 // ----------------------------------------------------------------------------
 // SETTINGS screen: brightness + touch recal + factory reset.
@@ -4158,6 +4321,8 @@ static void renderCurrentScreen() {
         case Screen::TRANSMIT: drawTransmitScreen();    break;
         case Screen::TX_CW:    drawTxCwScreen();        break;
         case Screen::TX_80211: drawTx80211Screen();     break;
+        case Screen::TX_MORSE: drawMorseScreen();       break;
+        case Screen::TX_HOP:   drawHopScreen();         break;
         case Screen::SETTINGS: drawSettingsScreen();    break;
         default:               drawPlaceholder(g_screen); break;
     }
@@ -4194,6 +4359,17 @@ static bool handleTouchOnce() {
                 return true;
             }
             if (g_screen == Screen::TX_80211) {
+                g_screen = Screen::TRANSMIT;
+                persistBootDest(1);
+                return true;
+            }
+            if (g_screen == Screen::TX_MORSE) {
+                txOokStop();
+                g_screen = Screen::TRANSMIT;
+                persistBootDest(1);
+                return true;
+            }
+            if (g_screen == Screen::TX_HOP) {
                 g_screen = Screen::TRANSMIT;
                 persistBootDest(1);
                 return true;
@@ -4282,6 +4458,12 @@ static bool handleTouchOnce() {
         }
         if (g_screen == Screen::TX_80211 && tx80211Touch(x, y)) {
             g_cfgDirty = true;
+            return true;
+        }
+        if (g_screen == Screen::TX_MORSE && morseTouch(x, y)) {
+            return true;
+        }
+        if (g_screen == Screen::TX_HOP && hopTouch(x, y)) {
             return true;
         }
     }
