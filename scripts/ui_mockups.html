@@ -1,0 +1,400 @@
+<title>Signalhound UI mockups</title>
+<style>
+/* Signalhound Wireless Wizard theme — ground truth from the CYD build. Design
+   plan: dark field, cyan/green glow buttons, scanner-green trace, amber for
+   trigger/warning. Monospace numerics for ham-ready readouts. */
+:root {
+  --page-bg: #141518;
+  --page-fg: #d8dde3;
+  --device-bg: #050607;
+  --panel-outline: #223146;
+  --glow-mid: #1b7fe0;
+  --glow-dim: #103258;
+  --glow-strong: #4aa4ff;
+  --trace: #44ff6a;
+  --ok: #2cd45f;
+  --warn: #ffb019;
+  --danger: #ff5a5a;
+  --mid: #7a8697;
+  --dim: #4a5361;
+  --accent: #44b7ff;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --page-bg: #efe9d9;
+    --page-fg: #1b1b1b;
+  }
+}
+body { background: var(--page-bg); color: var(--page-fg); font-family: var(--font-ui); margin: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 56px; }
+h1 { font-size: 26px; margin: 0 0 6px; font-weight: 500; letter-spacing: 0.2px; }
+h1 + p { margin: 0 0 24px; color: var(--mid); max-width: 72ch; }
+h2 { font-size: 15px; margin: 36px 0 10px; font-weight: 500; letter-spacing: 0.3px; color: var(--accent); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; }
+.cell { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.cell .label { font-size: 13px; color: var(--mid); letter-spacing: 0.3px; }
+.cell .label b { color: var(--page-fg); font-weight: 500; }
+.cell .note { font-size: 12px; color: var(--dim); max-width: 320px; line-height: 1.55; text-align: center; }
+.scr { width: 320px; height: 240px; background: var(--device-bg); position: relative; overflow: hidden;
+       border-radius: 6px; outline: 1px solid var(--panel-outline); box-shadow: 0 0 0 6px #0b0d10, 0 0 0 7px #1a2130; }
+.scr * { font-family: var(--font-ui); }
+.title { position: absolute; left: 50%; transform: translateX(-50%); top: 10px; color: var(--glow-strong); font-size: 20px; font-weight: 500; letter-spacing: 1px; }
+.corner-btn { position: absolute; width: 70px; height: 26px; border: 1.5px solid var(--glow-mid); border-radius: 8px; color: var(--glow-strong); font-size: 13px; display: flex; align-items: center; justify-content: center; letter-spacing: 0.4px; }
+.corner-btn.right { background: #082036; }
+.chip { position: absolute; border: 1.5px solid var(--glow-mid); border-radius: 8px; color: var(--glow-strong); display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.tile { border: 1.5px solid var(--glow-mid); border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--ok); font-weight: 500; }
+.tile .sub { color: var(--mid); font-size: 11px; font-weight: 400; margin-top: 4px; letter-spacing: 0.2px; }
+.tile.on { background: #0a2d1c; border-color: var(--ok); }
+.tile.hot { background: #2a1310; border-color: var(--danger); color: var(--danger); }
+.spec-trace { position: absolute; }
+.pill { position: absolute; height: 22px; border: 1px solid var(--glow-mid); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--mid); background: #06131f; }
+.pill b { color: var(--glow-strong); font-weight: 500; margin: 0 4px; }
+.row { position: absolute; display: flex; }
+.readout { color: var(--mid); font-size: 12px; font-family: var(--font-mono); }
+.readout b { color: var(--trace); font-weight: 500; }
+.hdr-line { color: var(--mid); font-family: var(--font-mono); font-size: 12px; }
+.btn-sq { width: 46px; height: 36px; border: 1.5px solid var(--glow-mid); border-radius: 8px; color: var(--glow-strong); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.btn-wide { height: 40px; border: 2px solid var(--ok); border-radius: 10px; color: var(--ok); display: flex; align-items: center; justify-content: center; font-size: 16px; letter-spacing: 1.5px; font-weight: 500; }
+.btn-wide.stop { border-color: var(--danger); color: var(--danger); background: #1b0a0a; }
+.led { width: 10px; height: 10px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 6px; }
+.led.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.led.off { background: #1e2a39; }
+.led.hot { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+/* reusable glow + layouts */
+.hdr-strip { position: absolute; top: 36px; left: 10px; right: 10px; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px; color: var(--mid); border-bottom: 1px solid #1a2838; padding-bottom: 6px; }
+.hdr-strip b { color: var(--trace); font-weight: 500; }
+.freq-huge { position: absolute; top: 68px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 36px; color: var(--trace); letter-spacing: 1px; }
+.freq-huge .u { font-size: 14px; color: var(--mid); margin-left: 6px; letter-spacing: 0.5px; }
+.chan-grid { position: absolute; top: 116px; left: 10px; right: 10px; display: grid; grid-template-columns: repeat(14, 1fr); gap: 2px; }
+.chan-grid div { height: 22px; border: 1px solid #243547; border-radius: 4px; color: var(--mid); font-size: 11px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); }
+.chan-grid div.sel { border-color: var(--glow-strong); color: var(--glow-strong); background: #0a2541; }
+.chan-grid div.ham { border-color: #406c20; color: var(--trace); background: #0c1a08; }
+.pill-row { position: absolute; bottom: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; gap: 6px; }
+.pill-row .pill { position: static; flex: 1; height: 24px; }
+
+/* legend coloring */
+.k-ham { color: var(--trace); }
+.k-sel { color: var(--glow-strong); }
+.k-def { color: var(--mid); }
+</style>
+
+<div class="wrap">
+
+<h1>Signalhound UI mockup set</h1>
+<p>Target: 320×240 CYD. Dark field, concentric blue‑glow buttons for navigation, scanner‑green for live values and the plot trace, amber for triggers, red for stop/danger. Monospace numerics so ham operators can read a frequency across the room. Every change below is scoped to a single screen so each can ship independently.</p>
+
+<h2>Transmit hub — fixes the overlap, adds Morse and Hop</h2>
+<div class="grid">
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <div class="title">Transmit</div>
+      <!-- 2x2 tiles -->
+      <div class="tile" style="position:absolute; left:14px; top:52px; width:142px; height:76px;">
+        CW / Sweep
+        <div class="sub">carrier · 1 MHz grid</div>
+      </div>
+      <div class="tile" style="position:absolute; right:14px; top:52px; width:142px; height:76px;">
+        802.11
+        <div class="sub">beacon · ch 1‑13 hop</div>
+      </div>
+      <div class="tile" style="position:absolute; left:14px; top:140px; width:142px; height:76px; color: var(--warn); border-color: var(--warn);">
+        Morse
+        <div class="sub">CW keyer · ham 13 cm</div>
+      </div>
+      <div class="tile" style="position:absolute; right:14px; top:140px; width:142px; height:76px; color: var(--accent); border-color: var(--accent);">
+        Hop test
+        <div class="sub">FHSS reference</div>
+      </div>
+    </div>
+    <div class="label"><b>Transmit hub</b> — 2×2 grid</div>
+    <div class="note">Fixes the current overlap: the old warning strip ran into the tiles. Here each mode is a square tile with mode in large text and one‑line description. Color‑codes the risk tier: green for benign CW, amber for licensed‑operator (Morse), blue for self‑test (Hop).</div>
+  </div>
+
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Back</div>
+      <div class="title" style="color: var(--warn)">Morse CW</div>
+      <!-- readout -->
+      <div class="hdr-line" style="position:absolute; top:36px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span>ch <b style="color:var(--glow-strong)">1</b> · <b style="color:var(--trace)">2412</b> MHz</span>
+        <span>WPM <b style="color:var(--trace)">12</b> · dit <b style="color:var(--trace)">100</b> ms</span>
+      </div>
+      <!-- preset messages -->
+      <div style="position:absolute; top:66px; left:12px; right:12px; display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+        <div class="chip" style="position:static; height:30px; color: var(--glow-strong); border-color: var(--glow-mid); font-size:13px; font-family: var(--font-mono)">CQ CQ DE K1XYZ</div>
+        <div class="chip" style="position:static; height:30px; color: var(--glow-strong); border-color: var(--glow-mid); font-size:13px; font-family: var(--font-mono)">TEST</div>
+        <div class="chip" style="position:static; height:30px; color: var(--glow-strong); border-color: var(--glow-mid); font-size:13px; font-family: var(--font-mono)">73 TU EE</div>
+        <div class="chip" style="position:static; height:30px; color: var(--glow-strong); border-color: var(--glow-mid); font-size:13px; font-family: var(--font-mono)">BEACON</div>
+      </div>
+      <!-- WPM / chan steppers -->
+      <div style="position:absolute; top:138px; left:12px; display:flex; gap:4px; align-items:center;">
+        <div class="btn-sq">−</div><div class="btn-sq" style="color:var(--trace); border-color:var(--trace)">WPM</div><div class="btn-sq">+</div>
+      </div>
+      <div style="position:absolute; top:138px; right:12px; display:flex; gap:4px; align-items:center;">
+        <div class="btn-sq">−</div><div class="btn-sq" style="color:var(--trace); border-color:var(--trace)">CHN</div><div class="btn-sq">+</div>
+      </div>
+      <!-- Status + GO -->
+      <div class="hdr-line" style="position:absolute; top:180px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span><span class="led off"></span>IDLE · queue 0</span>
+        <span style="color: var(--mid)">last: <b style="color:var(--trace)">CQ CQ DE K1XYZ</b></span>
+      </div>
+      <div class="btn-wide" style="position:absolute; bottom:10px; left:12px; right:12px;">KEY DOWN</div>
+    </div>
+    <div class="label"><b>Morse</b> — ham‑ready CW keyer</div>
+    <div class="note">Preset slots pull from NVS. Call sign is entered once in Settings and injected into the <span style="font-family:var(--font-mono)">DE &lt;call&gt;</span> templates. WPM 5‑30 (dit 240‑40 ms). Steppers rather than a touch keyboard — faster on gloves, no mis‑taps.</div>
+  </div>
+
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Back</div>
+      <div class="title" style="color: var(--accent)">Hop test</div>
+      <!-- hop pattern picker -->
+      <div class="hdr-line" style="position:absolute; top:36px; left:12px; right:12px;">pattern</div>
+      <div style="position:absolute; top:54px; left:12px; right:12px; display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+        <div class="chip" style="position:static; height:30px; background:#0a2541; color: var(--glow-strong); font-size:12px; font-family: var(--font-mono)">1 ‑ 6 ‑ 11</div>
+        <div class="chip" style="position:static; height:30px; font-size:12px; font-family: var(--font-mono)">1 ‑ 5 ‑ 9 ‑ 13</div>
+        <div class="chip" style="position:static; height:30px; font-size:12px; font-family: var(--font-mono)">1‑14 round</div>
+        <div class="chip" style="position:static; height:30px; font-size:12px; font-family: var(--font-mono)">BT‑alike 79</div>
+      </div>
+      <!-- dwell slider -->
+      <div class="hdr-line" style="position:absolute; top:126px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span>dwell</span><span><b style="color:var(--trace)">250</b> ms</span>
+      </div>
+      <div style="position:absolute; top:144px; left:12px; right:12px; height:4px; background:#1a2838; border-radius:2px;">
+        <div style="position:absolute; left:0; top:-5px; width:40%; height:14px; background:var(--glow-mid); border-radius:3px;"></div>
+      </div>
+      <!-- live state -->
+      <div class="hdr-line" style="position:absolute; top:172px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span><span class="led off"></span>IDLE · hops 0</span>
+        <span>cur <b style="color:var(--trace)">—</b></span>
+      </div>
+      <div class="btn-wide" style="position:absolute; bottom:10px; left:12px; right:12px; border-color:var(--accent); color:var(--accent)">START HOP</div>
+    </div>
+    <div class="label"><b>Hop test</b> — FHSS reference emitter</div>
+    <div class="note">Cycles <span style="font-family:var(--font-mono)">pll_chan</span> through a chosen pattern while a CW tone is keyed. Used to validate your own HOP tab detection and to simulate BT‑classic signatures for ADV HUNT false‑positive tests.</div>
+  </div>
+</div>
+
+<h2>Trigger — cleaned up: threshold, band gate, record on one screen</h2>
+<div class="grid">
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <div class="title" style="color: var(--warn)">Trigger</div>
+      <!-- threshold row with mini histogram -->
+      <div class="hdr-line" style="position:absolute; top:38px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span>threshold</span><span>bin <b style="color:var(--trace)">142</b> · fire <b style="color:var(--warn)">7</b></span>
+      </div>
+      <div style="position:absolute; top:56px; left:12px; right:12px; height:28px; background:#09131c; border:1px solid #1a2838; border-radius:4px; overflow:hidden;">
+        <!-- fake histogram -->
+        <svg viewBox="0 0 300 28" width="100%" height="100%" preserveAspectRatio="none" style="display:block;">
+          <path d="M0 26 L8 20 L16 23 L24 17 L32 18 L40 13 L48 15 L56 10 L64 14 L72 11 L80 7 L88 9 L96 5 L104 10 L112 7 L120 4 L128 8 L136 3 L144 1 L152 3 L160 7 L168 10 L176 6 L184 12 L192 9 L200 14 L208 11 L216 15 L224 14 L232 18 L240 17 L248 20 L256 19 L264 22 L272 20 L280 23 L288 22 L296 25 L300 26 L300 28 L0 28 Z" fill="#145024" />
+          <line x1="0" y1="10" x2="300" y2="10" stroke="#ffb019" stroke-dasharray="3 3" stroke-width="1" />
+          <text x="296" y="9" fill="#ffb019" font-size="8" text-anchor="end" font-family="monospace">142</text>
+        </svg>
+      </div>
+      <!-- band gate -->
+      <div class="hdr-line" style="position:absolute; top:96px; left:12px; right:12px;">band gate</div>
+      <div style="position:absolute; top:114px; left:12px; right:12px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
+        <div class="chip" style="position:static; height:28px; font-size:12px;">LEFT</div>
+        <div class="chip" style="position:static; height:28px; font-size:12px; background:#0a2541; color: var(--glow-strong)">ALL</div>
+        <div class="chip" style="position:static; height:28px; font-size:12px;">RIGHT</div>
+      </div>
+      <!-- recording -->
+      <div class="hdr-line" style="position:absolute; top:154px; left:12px; right:12px;">record</div>
+      <div style="position:absolute; top:172px; left:12px; right:12px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
+        <div class="chip" style="position:static; height:28px; font-size:12px;">OFF</div>
+        <div class="chip" style="position:static; height:28px; font-size:12px; background:#0a2d1c; color: var(--ok); border-color: var(--ok)">RING</div>
+        <div class="chip" style="position:static; height:28px; font-size:12px;">ONE‑SHOT</div>
+      </div>
+      <!-- SD -->
+      <div class="hdr-line" style="position:absolute; bottom:10px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span><span class="led on"></span>SD mounted · 14 caps</span>
+        <span style="color: var(--warn)">ARMED</span>
+      </div>
+    </div>
+    <div class="label"><b>Trigger</b> — single screen, three groups</div>
+    <div class="note">Threshold slider becomes a live mini‑histogram you drag on. Band and record rows use labeled chips so no legend is needed. SD + ARMED state lives on the bottom strip — no more guessing whether the trigger is active.</div>
+  </div>
+
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <div class="title" style="color: var(--glow-strong)">Tune</div>
+      <!-- tabs -->
+      <div style="position:absolute; top:38px; left:10px; right:10px; display:flex; gap:6px;">
+        <div class="chip" style="position:static; flex:1; height:26px; background:#0a2541; color: var(--glow-strong)">TUNE</div>
+        <div class="chip" style="position:static; flex:1; height:26px;">GAIN</div>
+      </div>
+      <!-- big freq -->
+      <div class="freq-huge" style="top:76px"><b>2412</b><span class="u">MHz</span></div>
+      <!-- chan grid -->
+      <div class="chan-grid" style="top:124px">
+        <div>1</div><div class="sel">2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div><div>10</div><div>11</div><div>12</div><div>13</div><div class="ham">14</div>
+      </div>
+      <!-- span -->
+      <div style="position:absolute; top:160px; left:12px; right:12px; display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;">
+        <div class="chip" style="position:static; height:26px; font-size:11px;">S16</div>
+        <div class="chip" style="position:static; height:26px; font-size:11px;">S40</div>
+        <div class="chip" style="position:static; height:26px; font-size:11px; background:#0a2541; color: var(--glow-strong)">S80</div>
+        <div class="chip" style="position:static; height:26px; font-size:11px;">HAM</div>
+      </div>
+      <!-- quick presets -->
+      <div class="pill-row">
+        <div class="pill">BLE adv <b>37</b></div>
+        <div class="pill">BLE adv <b>38</b></div>
+        <div class="pill">BLE adv <b>39</b></div>
+      </div>
+    </div>
+    <div class="label"><b>Tune</b> — TUNE tab</div>
+    <div class="note">Big frequency readout at top in MHz, so a ham in the shack can read it. Channel grid 1‑14 with current selection highlighted; <span class="k-ham">14</span> is green for the ham‑band overlap. BLE adv presets along the bottom. HAM span is a label for the full 13 cm 2300‑2450 range when that stays legal to receive.</div>
+  </div>
+
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <div class="title" style="color: var(--glow-strong)">Tune</div>
+      <div style="position:absolute; top:38px; left:10px; right:10px; display:flex; gap:6px;">
+        <div class="chip" style="position:static; flex:1; height:26px;">TUNE</div>
+        <div class="chip" style="position:static; flex:1; height:26px; background:#0a2541; color: var(--glow-strong)">GAIN</div>
+      </div>
+      <!-- AGC row -->
+      <div style="position:absolute; top:76px; left:12px; right:12px; display:flex; justify-content:space-between; align-items:center;">
+        <div class="hdr-line">AGC</div>
+        <div style="display:flex; gap:6px;">
+          <div class="chip" style="position:static; width:56px; height:28px; background:#0a2d1c; color: var(--ok); border-color: var(--ok)">ON</div>
+          <div class="chip" style="position:static; width:56px; height:28px;">OFF</div>
+        </div>
+      </div>
+      <!-- Gain slider -->
+      <div class="hdr-line" style="position:absolute; top:116px; left:12px; right:12px; display:flex; justify-content:space-between;">
+        <span>manual gain</span><span><b style="color:var(--trace)">72</b> / 72</span>
+      </div>
+      <div style="position:absolute; top:134px; left:12px; right:12px; height:4px; background:#1a2838; border-radius:2px;">
+        <div style="position:absolute; left:0; top:-5px; width:100%; height:14px; background:var(--dim); border-radius:3px;"></div>
+      </div>
+      <!-- AVG + FFT -->
+      <div style="position:absolute; top:160px; left:12px; right:12px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div>
+          <div class="hdr-line" style="margin-bottom:4px;">avg</div>
+          <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:3px;">
+            <div class="chip" style="position:static; height:22px; font-size:11px; background:#0a2541; color: var(--glow-strong)">1</div>
+            <div class="chip" style="position:static; height:22px; font-size:11px;">2</div>
+            <div class="chip" style="position:static; height:22px; font-size:11px;">4</div>
+            <div class="chip" style="position:static; height:22px; font-size:11px;">8</div>
+            <div class="chip" style="position:static; height:22px; font-size:11px;">16</div>
+          </div>
+        </div>
+        <div>
+          <div class="hdr-line" style="margin-bottom:4px;">FFT N</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:3px;">
+            <div class="chip" style="position:static; height:22px; font-size:11px; background:#0a2541; color: var(--glow-strong)">128</div>
+            <div class="chip" style="position:static; height:22px; font-size:11px;">256</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="label"><b>Tune</b> — GAIN tab</div>
+    <div class="note">AGC is a two‑state chip pair, not a toggle in a corner. Manual gain is a slider with digit readout so you know where you are on the 0‑72 range. AVG and FFT N are chip rows so the current pick is obvious at a glance.</div>
+  </div>
+</div>
+
+<h2>Live screen — current fix carried forward</h2>
+<div class="grid">
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <div class="corner-btn" style="left:86px; top:10px">Tune</div>
+      <div class="corner-btn right" style="right:10px; top:10px; width:44px">HOP</div>
+      <div class="hdr-line" style="position:absolute; top:16px; left:166px;">2440 AGC ‑42</div>
+      <!-- faux trace -->
+      <svg viewBox="0 0 300 110" width="300" height="110" style="position:absolute; top:46px; left:10px;" preserveAspectRatio="none">
+        <rect x="0" y="0" width="300" height="110" fill="#030507"/>
+        <path d="M0 108 L4 104 L8 106 L12 102 L16 100 L20 98 L24 94 L28 96 L32 93 L36 91 L40 95 L44 92 L48 89 L52 85 L56 82 L60 86 L64 80 L68 72 L72 60 L76 42 L80 34 L84 46 L88 60 L92 70 L96 78 L100 82 L104 85 L108 88 L112 92 L116 94 L120 96 L124 93 L128 95 L132 90 L136 94 L140 97 L144 98 L148 95 L152 97 L156 99 L160 97 L164 100 L168 98 L172 99 L176 101 L180 99 L184 103 L188 101 L192 104 L196 103 L200 106 L204 104 L208 106 L212 105 L216 107 L220 106 L224 108 L228 106 L232 108 L236 107 L240 108 L244 107 L248 108 L252 107 L256 108 L260 107 L264 108 L268 108 L272 108 L276 108 L280 107 L284 108 L288 108 L292 108 L296 108 L300 108 L300 110 L0 110 Z"
+              fill="#113a1a" stroke="#44ff6a" stroke-width="1"/>
+          <!-- peak marker -->
+          <line x1="78" y1="30" x2="78" y2="40" stroke="#ffb019" stroke-width="2"/>
+      </svg>
+      <!-- waterfall band -->
+      <div style="position:absolute; top:158px; left:10px; width:300px; height:52px; background: linear-gradient(180deg, #0e1b0c 0%, #214c1a 40%, #357624 80%); opacity:0.85;"></div>
+      <!-- pill strip -->
+      <div class="pill-row">
+        <div class="pill">AGC <b>on</b></div>
+        <div class="pill">AVG <b>4</b></div>
+        <div class="pill">PEAK <b>142</b></div>
+        <div class="pill">FFT <b>128</b></div>
+      </div>
+    </div>
+    <div class="label"><b>Live</b> — frequency readout no longer overlaps Tune</div>
+    <div class="note">Current fix: compact readout <span style="font-family:var(--font-mono)">2440 AGC ‑42</span> fits between Tune and HOP. BW moved to the pill strip. Waterfall sits below the trace; pills below that in a 4‑column row (AGC / AVG / PEAK / FFT).</div>
+  </div>
+
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <!-- 6 tiles -->
+      <div class="title" style="color: var(--glow-strong)">Signalhound</div>
+      <div style="position:absolute; top:54px; left:10px; right:10px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+        <div class="tile" style="height:80px;">Live<div class="sub">spectrum</div></div>
+        <div class="tile" style="height:80px;">Tune<div class="sub">chan + gain</div></div>
+        <div class="tile" style="height:80px;">Trigger<div class="sub">arm · record</div></div>
+        <div class="tile" style="height:80px;">Transmit<div class="sub">CW · Morse · hop</div></div>
+        <div class="tile" style="height:80px;">Caps<div class="sub">SD history</div></div>
+        <div class="tile" style="height:80px;">Settings<div class="sub">call · nvs · bl</div></div>
+      </div>
+    </div>
+    <div class="label"><b>Home</b> — reference, unchanged</div>
+    <div class="note">Still a 3×2 glow‑tile grid. Only the Transmit tile's description changes to "CW · Morse · hop" to signal the expanded capability.</div>
+  </div>
+</div>
+
+<h2>Settings addition — ham operator fields</h2>
+<div class="grid">
+  <div class="cell">
+    <div class="scr">
+      <div class="corner-btn" style="left:10px; top:10px">Home</div>
+      <div class="title" style="color: var(--glow-strong)">Settings</div>
+      <div style="position:absolute; top:42px; left:12px; right:12px; display:flex; flex-direction:column; gap:8px;">
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>call sign</span><span style="color:var(--trace); font-family:var(--font-mono)">K1XYZ</span>
+        </div>
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>Morse WPM default</span><span style="color:var(--trace); font-family:var(--font-mono)">15</span>
+        </div>
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>TX power cap</span><span style="color:var(--trace); font-family:var(--font-mono)">19.5 dBm</span>
+        </div>
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>WiFi‑only radio</span><span style="color: var(--ok)">on</span>
+        </div>
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>brightness</span><span style="color:var(--trace); font-family:var(--font-mono)">80 %</span>
+        </div>
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>touch cal</span><span style="color:var(--mid)">LOADED</span>
+        </div>
+        <div class="hdr-line" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>SD</span><span style="color:var(--ok)">mounted · 14 caps</span>
+        </div>
+      </div>
+      <div class="pill-row">
+        <div class="pill">Edit call</div>
+        <div class="pill">Clear NVS</div>
+        <div class="pill">Reboot</div>
+      </div>
+    </div>
+    <div class="label"><b>Settings</b> — call sign, Morse defaults</div>
+    <div class="note">Call sign stored in NVS, injected into Morse preset templates (<span style="font-family:var(--font-mono)">CQ CQ DE &lt;call&gt;</span>). Shows the current TX power cap and whether WiFi‑only mode is active, so the operator can confirm the radio is in the state they expect.</div>
+  </div>
+</div>
+
+<p style="margin-top: 36px; color: var(--mid); font-size: 13px; max-width: 72ch;">
+Build order if you approve: <b style="color: var(--page-fg)">1</b> Live label fix (shipped already), <b style="color: var(--page-fg)">2</b> Transmit hub 2×2 grid, <b style="color: var(--page-fg)">3</b> Morse sub‑screen, <b style="color: var(--page-fg)">4</b> Trigger single‑screen cleanup, <b style="color: var(--page-fg)">5</b> Tune TUNE tab big‑freq + ham chip, <b style="color: var(--page-fg)">6</b> Tune GAIN tab layout, <b style="color: var(--page-fg)">7</b> Settings call sign + ham defaults, <b style="color: var(--page-fg)">8</b> Hop sub‑screen. Each is a 1‑3 hour drop‑in; the state machine stays as it is.
+</p>
+
+</div>
