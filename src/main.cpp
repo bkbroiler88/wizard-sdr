@@ -4597,6 +4597,47 @@ static void cliExec(char* line) {
         Serial.printf("ok rfpll=%u\n", mhz);
         return;
     }
+    // PLL sub-offset override (signed MHz, applied via __wrap_RFChannelSel).
+    // 0 = pass-through, nonzero = shift carrier by that many MHz on each TX.
+    // See src/pll_wrap.cpp.
+    if (!strcmp(tok, "pll_offset")) {
+        extern volatile int g_pllSubOffsetMhz;
+        int v = arg(0);
+        g_pllSubOffsetMhz = v;
+        Serial.printf("ok pll_offset=%d MHz (0 = pass-through)\n", v);
+        return;
+    }
+    if (!strcmp(tok, "pll_status")) {
+        extern volatile int g_pllSubOffsetMhz;
+        extern volatile int g_pllWrapMode;
+        extern volatile int g_pllWrapHits;
+        extern volatile int g_pllWrapLastChan;
+        extern volatile int g_pllWrapLastApplied;
+        extern volatile int g_pllWrapPreCount;
+        extern volatile int g_pllWrapPostCount;
+        Serial.printf("mode=%d offset=%d hits=%d last_chan=%d last_applied=%d pre=%d post=%d\n",
+                      g_pllWrapMode, g_pllSubOffsetMhz, g_pllWrapHits,
+                      g_pllWrapLastChan, g_pllWrapLastApplied,
+                      g_pllWrapPreCount, g_pllWrapPostCount);
+        return;
+    }
+    if (!strcmp(tok, "pll_mode")) {
+        extern volatile int g_pllWrapMode;
+        int v = arg(1);
+        if (v < 0 || v > 2) { Serial.println("err pll_mode 0..2"); return; }
+        g_pllWrapMode = v;
+        const char* n = (v==0)?"PASSTHRU":(v==1)?"LOG_ONLY":"RECALL";
+        Serial.printf("ok pll_mode=%d (%s)\n", v, n);
+        return;
+    }
+    if (!strcmp(tok, "pll_chan")) {
+        extern volatile int g_pllChanOverride;
+        int v = arg(0);
+        if (v < 0 || v > 14) { Serial.println("err pll_chan 0..14 (0=off)"); return; }
+        g_pllChanOverride = v;
+        Serial.printf("ok pll_chan=%d (0=pass-through)\n", v);
+        return;
+    }
     if (!strcmp(tok, "pbus_tx")) {
         const char* a = strtok(nullptr, " \t");
         if (!a) { Serial.println("err pbus_tx on|off"); return; }
@@ -5030,6 +5071,40 @@ static void cliExec(char* line) {
         esp_wifi_start();
         esp_wifi_set_promiscuous(true);
         Serial.println("ok reset_rx");
+        return;
+    }
+    // Raw hardware CW test: bypass esp_phy_wifi_tx_tone entirely and drive the
+    // TX chain directly from ROM + libphy symbols. Lets us set an arbitrary PLL
+    // freq (not just WiFi channels) and see if the carrier follows. Experimental.
+    if (!strcmp(tok, "raw_cw")) {
+        unsigned mhz = (unsigned)arg(2320);
+        Serial.printf("[raw_cw] setup PA path mhz=%u\n", mhz);
+        rom_pbus_workmode();
+        rom_pbus_xpd_rx_off();
+        rom_pbus_xpd_tx_on(1);
+        rom_set_rxclk_en(0);
+        rom_set_txclk_en(1);
+        rom_rfpll_set_freq(mhz);
+        // tx_cont_cfg(1) + tx_cont_en() is the libphy "clean" continuous-TX path
+        tx_cont_cfg(1);
+        tx_cont_en();
+        // Belt-and-suspenders: also fire the ROM tone function if the libphy
+        // path alone doesn't drive the PA. Args are guesses by analogy with
+        // start_tx_tone(1) on other chips.
+        rom_start_tx_tone(1, 0, 0);
+        Serial.printf("ok raw_cw started at %u MHz\n", mhz);
+        return;
+    }
+    if (!strcmp(tok, "raw_cw_off")) {
+        rom_stop_tx_tone(1);
+        tx_cont_dis();
+        rom_pbus_xpd_tx_off();
+        rom_set_txclk_en(0);
+        // Restore RX state
+        rom_pbus_workmode();
+        rom_pbus_xpd_rx_on(1);
+        rom_set_rxclk_en(1);
+        Serial.println("ok raw_cw_off");
         return;
     }
     Serial.printf("err unknown '%s' -- try 'help'\n", tok);
