@@ -1165,8 +1165,20 @@ constexpr int kNumPresets = sizeof(kPresets) / sizeof(kPresets[0]);
 // ----------------------------------------------------------------------------
 void touchInit() {
 #ifdef SIGNALHOUND_AWOK
-    // TFT_eSPI handles the shared-SPI touch init implicitly on first
-    // getTouchRaw() call. Nothing to do here.
+    // Explicit touch CS pin setup -- TFT_eSPI's getTouchRawZ expects the
+    // pin to already be in OUTPUT state and parked HIGH; it doesn't do
+    // pinMode internally. SquachWatch gets this for free because its
+    // XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ) constructor runs
+    // first. Also arm the IRQ pin as INPUT so a weak internal pull-up
+    // isn't fighting the chip's open-drain IRQ.
+    pinMode(21, OUTPUT);
+    digitalWrite(21, HIGH);
+    pinMode(36, INPUT);
+    // Seed TFT_eSPI's touch calibration state with identity so its
+    // internal "cal armed?" check lets getTouchRaw run.
+    uint16_t cal[5] = { 300, 3700, 300, 3700, 1 };
+    tft.setTouch(cal);
+    Serial.println("[tc] awok touch init: CS=21 OUTPUT HIGH, IRQ=36 INPUT, setTouch seeded");
 #else
     pinMode(kTouchIrq, INPUT);
     pinMode(kTouchCs, OUTPUT);
@@ -1177,21 +1189,24 @@ void touchInit() {
 
 bool touchReadRaw(uint16_t& rx, uint16_t& ry, uint16_t& rz) {
 #ifdef SIGNALHOUND_AWOK
-    // Shared SPI: ask TFT_eSPI for the current raw touch sample. It handles
-    // CS toggle + XPT2046 command set + CS release so the display's own
-    // transactions aren't disturbed. No separate z1/z2 pressure read on
-    // this path, so we synthesize rz from the "pressed" flag.
+    // AWOK pattern per SquachWatch-CYD: TFT_eSPI 2.5.43's getTouchRaw()
+    // always returns true even when MISO floats high (reads 0x1FFF). The
+    // reliable gate is getTouchRawZ() -- real pressure crosses the Z
+    // threshold, floating-MISO reads do not. Threshold 350 from SquachWatch.
+    uint16_t z = tft.getTouchRawZ();
     uint16_t x = 0, y = 0;
-    uint8_t pressed = tft.getTouchRaw(&x, &y);
+    bool realPress = (z >= 350);
+    if (realPress) tft.getTouchRaw(&x, &y);
     rx = x; ry = y;
-    rz = pressed ? (0xFFF - 100) : (0xFFF - 1);
+    rz = realPress ? (0xFFF - 100) : (0xFFF - 1);
     static unsigned long lastZprint = 0;
     unsigned long now = millis();
     if (now - lastZprint > 300) {
-        Serial.printf("[tc] awok x=%u y=%u pressed=%u\n", rx, ry, pressed);
+        Serial.printf("[tc] awok z=%u x=%u y=%u press=%d\n",
+                      (unsigned)z, (unsigned)x, (unsigned)y, realPress ? 1 : 0);
         lastZprint = now;
     }
-    return pressed != 0;
+    return realPress;
 #else
     touchSpi.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
     digitalWrite(kTouchCs, LOW);
@@ -4676,7 +4691,21 @@ void setup() {
     touchInit();
     bool hasCal = loadTouchCalibration();
     Serial.printf("[sh] touch cal %s\n", hasCal ? "LOADED" : "MISSING -- calibrating");
+#ifdef SIGNALHOUND_AWOK
+    // Seed a default AWOK touch cal: Marauder V6.1's XPT2046 panel reads
+    // raw ~300..3700 on both axes in portrait. Signalhound rotates to
+    // landscape; swapXY picks up the 90-degree rotation.
+    if (!hasCal) {
+        touchCal.swapXY   = true;
+        touchCal.rawAtX0  = 3700;
+        touchCal.rawAtX1  = 300;
+        touchCal.rawAtY0  = 300;
+        touchCal.rawAtY1  = 3700;
+        Serial.println("[sh] AWOK: seeded default touch cal (300..3700, swapXY)");
+    }
+#else
     if (!hasCal) runTouchCalibration();
+#endif
 
     // --- SD card (optional). If present, load recent captures into the RAM ring
     // so CAPS tab shows prior-session history across reboots.
