@@ -40,6 +40,14 @@
 extern "C" {
     void esp_phy_disable(int modem);
     void esp_phy_enable(int modem);
+    // Public libphy helper: tell PHY we are WiFi-only (no BT coexistence).
+    void phy_set_wifi_mode_only(bool wifi_only);
+    // OOK / Morse keyer entry points (src/tx_ook.cpp).
+    void txOokInit(void);
+    void txOokStop(void);
+    bool txOokIsActive(void);
+    void txOokMorse(const char* text, int wpm, uint8_t chan, uint8_t bo);
+    void txOokPattern(const char* bits, int bit_ms, uint8_t chan, uint8_t bo);
 }
 constexpr int kPhyModemWifi = 1;
 
@@ -4454,6 +4462,7 @@ void setup() {
     // Priority 1 round-robins with uiTask; the SWEEP loop yields every
     // kYieldEvery steps so UI stays responsive.
     xTaskCreatePinnedToCore(cwTask, "cw", 8192, nullptr, 1, nullptr, 1);
+    txOokInit();
     Serial.println("[sh] tasks launched; UI on core 1, RF stub on core 0");
     // Note: cert_test init (esp_phy_rftest_init) is deferred to cwTask's
     // first IDLE->TX transition. Called from setup() it hung the boot
@@ -4479,6 +4488,21 @@ void setup() {
         Serial.printf("[sh] ESP-SDR ready, gain_max=%u -- rfTask will acquire\n",
                       espSdrGainMax());
     }
+
+    // --- Quick wins from the libphy RE pass -----------------------------
+    // Pin max TX power to the chip ceiling (78 * 0.25 dB = 19.5 dBm, the
+    // highest LIMIT bound in esp_phy_init_data). Default build may clamp
+    // lower depending on CONFIG_ESP_PHY_MAX_TX_POWER. Call after esp-sdr
+    // brings up WiFi in NULL mode.
+    {
+        esp_err_t e = esp_wifi_set_max_tx_power(78);
+        Serial.printf("[sh] esp_wifi_set_max_tx_power(78) rc=%d\n", (int)e);
+    }
+    // Tell libphy we're WiFi-only (no BT coexistence). Frees RF resources
+    // the coex scheduler would otherwise reserve, giving CW TX a cleaner
+    // uninterrupted carrier.
+    phy_set_wifi_mode_only(true);
+    Serial.println("[sh] phy_set_wifi_mode_only(true) -- WiFi-only radio");
 }
 
 // --- Experimental serial CLI for poking the undocumented TX path --------
@@ -4638,6 +4662,31 @@ static void cliExec(char* line) {
         if (v < -64 || v > 63) { Serial.println("err pll_chan -64..63 (0=off)"); return; }
         g_pllChanOverride = v;
         Serial.printf("ok pll_chan=%d (0=pass-through, 1-14=WiFi grid, other=experimental)\n", v);
+        return;
+    }
+    // ---- OOK / Morse keyer ----
+    // tx_ook_morse <wpm> <text...>    — Morse CW on WiFi ch 1 at bo=0
+    // tx_ook_pattern <bit_ms> <bits>  — raw 0/1 pattern, bit_ms per bit
+    // tx_ook_stop                     — flush queue, release carrier
+    if (!strcmp(tok, "tx_ook_morse")) {
+        int wpm = arg(20);
+        const char* text = strtok(NULL, "");         // rest of line
+        if (!text) { Serial.println("err tx_ook_morse <wpm> <text>"); return; }
+        while (*text == ' ') text++;
+        txOokMorse(text, wpm, 1, 0);
+        return;
+    }
+    if (!strcmp(tok, "tx_ook_pattern")) {
+        int bit_ms = arg(50);
+        const char* bits = strtok(NULL, "");
+        if (!bits) { Serial.println("err tx_ook_pattern <bit_ms> <bits>"); return; }
+        while (*bits == ' ') bits++;
+        txOokPattern(bits, bit_ms, 1, 0);
+        return;
+    }
+    if (!strcmp(tok, "tx_ook_stop")) {
+        txOokStop();
+        Serial.println("ok tx_ook_stop");
         return;
     }
     if (!strcmp(tok, "pbus_tx")) {
