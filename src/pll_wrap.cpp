@@ -42,8 +42,10 @@ extern "C" int __wrap_RFChannelSel(int chan, int zero) {
 
     // Optionally substitute the chan arg so __real_RFChannelSel configures
     // the hardware for a different WiFi channel than the caller requested.
-    int effChan = (g_pllChanOverride > 0 && g_pllChanOverride <= 14)
-                   ? g_pllChanOverride : chan;
+    // Full signed range -64..63 (RFChannelSel sign-extends to 7 bits). We
+    // treat 0 as "pass through" by convention; use pll_chan 15, 20, -1, etc.
+    // to probe past the WiFi grid.
+    int effChan = (g_pllChanOverride != 0) ? g_pllChanOverride : chan;
 
     // Always let the real one run (possibly with substituted chan).
     int ret = __real_RFChannelSel(effChan, zero);

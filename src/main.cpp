@@ -4633,9 +4633,11 @@ static void cliExec(char* line) {
     if (!strcmp(tok, "pll_chan")) {
         extern volatile int g_pllChanOverride;
         int v = arg(0);
-        if (v < 0 || v > 14) { Serial.println("err pll_chan 0..14 (0=off)"); return; }
+        // Relaxed to full signed-8 range (-64..63) so we can probe past the
+        // WiFi 1-14 window and see what libphy/ROM does with unusual values.
+        if (v < -64 || v > 63) { Serial.println("err pll_chan -64..63 (0=off)"); return; }
         g_pllChanOverride = v;
-        Serial.printf("ok pll_chan=%d (0=pass-through)\n", v);
+        Serial.printf("ok pll_chan=%d (0=pass-through, 1-14=WiFi grid, other=experimental)\n", v);
         return;
     }
     if (!strcmp(tok, "pbus_tx")) {
