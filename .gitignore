@@ -9,3 +9,8 @@ build/
 *.bin
 *.map
 *.d
+# Ephemeral capture + analysis output from the HackRF/CYD calibration work
+scripts/*.csv
+scripts/*.log
+scripts/*.png
+scripts/*.iq

@@ -30,6 +30,8 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
+#include <SD.h>
+#include <FS.h>
 #include <Preferences.h>
 #include "esp_sdr.h"
 #include "esp_wifi.h"            // for esp_wifi_set_channel in radio arbiter
@@ -100,6 +102,42 @@ static uint8_t g_bootDest = 0;
 enum class TuneTab : uint8_t { TUNE = 0, GAIN = 1 };
 static TuneTab g_tuneTab = TuneTab::TUNE;
 
+enum class LiveTab : uint8_t { SPEC = 0, HOP = 1 };
+static LiveTab g_liveTab = LiveTab::SPEC;
+
+// Hunt mode within the HOP tab. ADV_CYCLE rotates through the three BLE
+// advertising channels; ADV_LOCK_* parks on one. CONN/WIFI/ZB are reserved
+// placeholders (dim chips in the UI, not yet wired to tune profiles).
+enum class HopMode : uint8_t {
+    ADV_CYCLE   = 0,
+    ADV_LOCK_37 = 1,
+    ADV_LOCK_38 = 2,
+    ADV_LOCK_39 = 3,
+    // Reserved for future hunts (chips are dim):
+    CONN        = 4,
+    WIFI        = 5,
+    ZB          = 6,
+};
+static HopMode g_hopMode = HopMode::ADV_CYCLE;
+
+// Tune save/restore around HOP tab visits: HOP takes over g_wifiCh +
+// g_wantSpan to drive the hunt's own cycle; we restore the user's prior
+// settings when they leave the tab. (SpanMode's underlying values match
+// clockIdx: S16=0, S80=1, S40=2 -- 1 == SpanMode::S80.)
+static uint8_t  g_hopSaveCh      = 7;
+static uint8_t  g_hopSaveSpan    = 1;    // = (uint8_t)SpanMode::S80
+static bool     g_hopTuneSaved   = false;
+static uint32_t g_hopCycleNextMs = 0;
+static int      g_hopCycleIdx    = 0;
+
+// kAdvTunes[] and kConnTunes[] are defined after SpanMode (line ~237);
+// forward-declared here so hop helpers above can reference them.
+struct AdvTune  { uint8_t wifiCh; uint8_t span; uint16_t targetMhz; int bleCh; };
+struct ConnTune { uint8_t wifiCh; uint8_t span; };
+extern const AdvTune  kAdvTunes[3];
+extern const ConnTune kConnTunes[2];
+constexpr uint32_t kHopCycleDwellMs = 300;
+
 static const char* const kScreenName[] = {
     "HOME", "LIVE", "TRIGGER", "RECORD", "CAPTURES",
     "DECODING", "FINDING", "TUNE", "TRANSMIT",
@@ -143,6 +181,17 @@ constexpr int kTouchMosi = 32;
 constexpr int kTouchMiso = 39;
 constexpr int kTouchIrq  = 36;
 SPIClass touchSpi(VSPI);
+
+// SD lives on the same VSPI peripheral as touch, but on the CYD's physical
+// SD-slot pads (18/19/23/5). The pin mux is re-pointed per operation:
+// touch runs with VSPI mux = touch pads; SD write briefly re-muxes to SD
+// pads, then restores. All SD + touch access is from the UI task on Core 1
+// so no cross-task race.
+constexpr int kSdCs   = 5;
+constexpr int kSdSck  = 18;
+constexpr int kSdMiso = 19;
+constexpr int kSdMosi = 23;
+SPIClass sdSpi(VSPI);
 // Idle noise on this specific CYD panel reads rz 300-510 with no finger.
 // Threshold must be comfortably above that; real resistive touch typically
 // clears 1000-3500.
@@ -185,6 +234,26 @@ static uint32_t g_lastFrameSeen  = 0;
 // SpanMode values ARE clockIdx values (16 MS/s=0, 80 MS/s=1, 40 MS/s=2) so
 // we can pass straight through to espSdrAcquireBurst.
 enum class SpanMode : uint8_t { S16 = 0, S80 = 1, S40 = 2 };
+
+// HopMode's adv-channel tune profiles. Each profile puts the target MHz
+// safely inside the span (clear of the edge-guard rejection zone).
+const AdvTune kAdvTunes[3] = {
+    { 1,  (uint8_t)SpanMode::S40, 2402, 37 },
+    { 4,  (uint8_t)SpanMode::S40, 2426, 38 },
+    { 13, (uint8_t)SpanMode::S40, 2480, 39 },
+};
+
+// CONN hunt: BLE data chs are the even BT chs 2..22 + 26..76 (37 channels).
+// Two 40 MHz tune positions cover the full data-ch space with a bit of
+// overlap in the middle:
+//   ch 3  S40: center 2422, range 2402-2442 → BT 0..40 (data chs 2-40)
+//   ch 11 S40: center 2462, range 2442-2482 → BT 40..78 (data chs 40-76)
+// ConnTune struct is forward-declared above (SpanMode block).
+const ConnTune kConnTunes[2] = {
+    { 3,  (uint8_t)SpanMode::S40 },
+    { 11, (uint8_t)SpanMode::S40 },
+};
+
 static volatile uint8_t  g_wifiCh      = 6;        // UI → RF: desired channel
 static volatile uint8_t  g_wantSpan    = (uint8_t)SpanMode::S16;
 static uint8_t           g_appliedCh   = 6;
@@ -250,9 +319,12 @@ static volatile uint8_t g_txBackoff = 0;
 static volatile uint8_t g_cwMode = 0;
 // BT_SWEEP sub-pattern (only relevant when g_cwMode == 4):
 //   0 = FULL     (sweep BT ch 0..78 = 2402..2480 MHz, entire ISM band)
-//   1 = SPAN     (±span MHz around the selected center WiFi channel)
+//   1 = SPAN     (±span MHz around the selected center BT channel)
 //   2 = BLE_ADV  (interleave BLE adv channels: BT 0 / 24 / 78)
 static volatile uint8_t g_btSweepPat = 0;
+// Direct BT channel 0..78 (= 2402 + N MHz). Used by BT (mode 3) and BT_SWEEP
+// SPAN (mode 4 pattern 1). Default 10 = 2412 MHz (same spot as WiFi ch 1).
+static volatile uint8_t g_btChan = 10;
 // SWEEP mode -- matches cyd-bulb-controller nrf_jam.cpp CW handler:
 // init carrier once, then retune the PLL at microsecond rate via a
 // direct low-level channel setter. Yield to the scheduler every
@@ -448,9 +520,13 @@ static bool radioSwitchMode(uint8_t target, uint8_t chan, uint8_t bo) {
             esp_phy_wifi_tx_tone(1, chan, bo);
             break;
         case RADIO_TX_BT_CW: {
-            int btCh = wifiChToBtCh(chan);
-            Serial.printf("[radio]   bt_tx_tone(1, %d, %d) (WiFi ch %d -> %d MHz)\n",
-                          btCh, bo, chan, 2402 + btCh);
+            // In BT modes we address BT channels directly (0..78 = 1 MHz grid).
+            // The arbiter's `chan` arg carries the direct BT channel when
+            // mode is BT (3) or BT_SWEEP (4); fall back to WiFi mapping if
+            // somebody passed a WiFi channel for backward-compat.
+            int btCh = (chan >= 0 && chan <= 78) ? chan : wifiChToBtCh(chan);
+            Serial.printf("[radio]   bt_tx_tone(1, %d, %d) = %d MHz\n",
+                          btCh, bo, 2402 + btCh);
             esp_phy_test_start_stop(3);
             esp_phy_bt_tx_tone(1, btCh, bo);
             break;
@@ -619,6 +695,11 @@ static const uint8_t kTxProbe[] = {
 // Trigger state. UI owns these except g_trigFireCount / g_trigLastFireMs,
 // which the UI task bumps when a frame crosses the threshold.
 enum class TrigBand : uint8_t { ALL = 0, LEFT = 1, RIGHT = 2 };
+// Sub-tabs within the TRIGGER screen: CFG (threshold / band), REC (record
+// on/off + buffer status), CAPS (scrolling list of captured events).
+enum class TrigTab : uint8_t { CFG = 0, REC = 1, CAPS = 2 };
+static TrigTab g_trigTab = TrigTab::CFG;
+static int     g_capScroll = 0;         // top row index in CAPS list
 static bool     g_trigEnabled    = false;
 static uint8_t  g_trigThreshold  = 160;      // code 0..255
 static TrigBand g_trigBand       = TrigBand::ALL;
@@ -631,6 +712,369 @@ static bool     g_trigArmed      = true;
 constexpr uint8_t kTrigHysteresis = 10;
 // Visual flash state: when non-zero, LIVE paints a bright border + fire marker.
 static uint8_t  g_trigFlashFrames = 0;
+
+// -----------------------------------------------------------------------------
+// Capture buffer: a RAM ring of trigger-fire events. UI reads via CAPS tab.
+// -----------------------------------------------------------------------------
+struct CaptureEvent {
+    uint32_t tsMs;             // millis() at fire
+    uint8_t  peakBin;          // bin index that triggered
+    uint8_t  peakLevel;        // 0..255 at fire
+    uint8_t  band;             // TrigBand value
+    uint8_t  wifiCh;           // tune state at fire
+    uint8_t  spanMode;         // SpanMode value
+    uint8_t  fftN;             // 128 or 256 (bins at fire)
+    uint8_t  _pad[1];
+    uint8_t  snap[64];         // max-pooled bins at fire (for sparkline)
+};
+
+constexpr int kCapCapacity = 64;
+static CaptureEvent g_capBuf[kCapCapacity] = {};
+static int          g_capHead      = 0;          // next write slot (ring)
+static int          g_capCount     = 0;          // valid events (<= capacity)
+static bool         g_recordOn     = false;      // toggle: log fires?
+static bool         g_recordRing   = true;       // true=overwrite, false=stop-when-full
+static bool         g_recordFull   = false;      // one-shot buffer stopped
+
+// Hop Trail: compact per-channel activity log. Classifier reads this to
+// label active hoppers (BLE conn / BLE adv / WiFi) without demod. RAM only.
+struct HopEvent {
+    uint32_t tsMs;         // millis() at frame
+    uint8_t  binIdx;       // dominant bin
+    uint8_t  level;        // 0..255
+    uint8_t  wifiCh;       // tune state (so we can map bin -> BT ch at render)
+    uint8_t  spanMode;
+};  // 8 bytes
+
+constexpr int kHopRingSize = 512;             // ~5-10 s of hop history
+static HopEvent g_hopRing[kHopRingSize] = {};
+static int      g_hopHead  = 0;
+static int      g_hopCount = 0;
+
+// Scatter strip: scrolling ring (waterfall-style) of per-slot dominant BT ch.
+// 100 cols x 50 ms = 5 s window. Each slot stores (btCh + 1), 0 = empty.
+constexpr int kScatterCols   = 100;
+constexpr int kScatterColMs  = 50;
+static uint8_t  g_scatterRing[kScatterCols]      = {0};
+static uint8_t  g_scatterLastDrawn[kScatterCols] = {0};
+static int      g_scatterHead      = 0;
+static uint32_t g_scatterLastShift = 0;
+
+// Hop detection thresholds (both apply):
+//   g_hopMinLevel: absolute floor (0..255). A peak below this is noise.
+//   g_hopDelta:    required margin above the per-bin running noise floor.
+// Defaults tuned so a 10-30 count signal spike at any bin above its own
+// local floor registers, while uniform noise jitter does not.
+static volatile uint8_t g_hopMinLevel = 30;
+static volatile uint8_t g_hopDelta    = 18;
+
+// Per-bin running noise floor. EWMA with asymmetric time constants: climbs
+// slowly when samples are above the floor (so real signals don't inflate
+// it), descends quickly when samples drop. Values stored in Q4 (shifted
+// left by 4) so a 1-unit sample moves the floor by 1/16 per update.
+static uint16_t g_binFloor[kFftMaxBins] = {0};
+static bool     g_binFloorPrimed = false;
+
+// Reject bins within kEdgeGuard of either FFT edge. These bins carry DC
+// offset, aliasing, and windowing artifacts that fake "signal" there --
+// the main cause of phantom BLE adv hits at BT 0 and BT 78.
+constexpr int kEdgeGuard = 4;
+
+// Hoprun stats: cumulative counters bumped inside hopLog while a timed
+// `hoprun N` is active. Snapshot at run start (zeroed), diff printed at end.
+struct HopRunStats {
+    uint32_t total;
+    uint32_t adv0, adv24, adv78;
+    uint32_t connCnt;
+    uint32_t connDtSum;
+    uint32_t fastHop;
+    uint32_t perCh[79];
+};
+static volatile bool          g_hoprunActive = false;
+static volatile HopRunStats   g_hoprun = {};
+
+// Usage-bar + classifier dirty caches, used by drawLiveHopTabTick.
+static uint8_t g_hopUsageLastH[79]  = {0};
+static char    g_hopClassMainCache[3][40] = {};
+static char    g_hopClassSubCache[3][24]  = {};
+static int     g_hopLastRateShown   = -1;
+static bool    g_hopTabPrimed       = false;
+
+// SD mirror -- when mounted, every logged event is appended to
+// /signalhound/captures.bin. On boot, the last 64 events are loaded back into
+// the RAM ring so the user sees history after a reboot.
+static bool     g_sdMounted = false;
+static uint32_t g_sdCapTotal = 0;    // total events written to SD this session + loaded
+static const char* kCapDir  = "/signalhound";
+static const char* kCapFile = "/signalhound/captures.bin";
+static const uint32_t kSdCapMagic = 0x41434853;   // 'SHCA' LE
+static const uint32_t kSdCapVer   = 1;
+
+// SD helpers --------------------------------------------------------------
+// VSPI is shared between touch (pads 25/32/39/33) and the SD card slot
+// (pads 18/19/23/5). SPIClass::begin() early-returns once _spi is set, so
+// after the first SD mount we re-point VSPI's GPIO matrix routing via the
+// hal functions, not SPIClass. Touch invariant: pins stay on touch at rest.
+// All switching is from the UI task on Core 1, so no cross-task race.
+static spi_t* g_vspiBus = nullptr;
+static int    g_curSck  = -1, g_curMiso = -1, g_curMosi = -1;
+
+static void vspiMux(int sck, int miso, int mosi) {
+    if (!g_vspiBus) return;
+    if (g_curSck  >= 0 && g_curSck  != sck)  spiDetachSCK(g_vspiBus,  g_curSck);
+    if (g_curMiso >= 0 && g_curMiso != miso) spiDetachMISO(g_vspiBus, g_curMiso);
+    if (g_curMosi >= 0 && g_curMosi != mosi) spiDetachMOSI(g_vspiBus, g_curMosi);
+    spiAttachSCK(g_vspiBus,  sck);
+    spiAttachMISO(g_vspiBus, miso);
+    spiAttachMOSI(g_vspiBus, mosi);
+    g_curSck = sck; g_curMiso = miso; g_curMosi = mosi;
+}
+static void vspiToSd()    { vspiMux(kSdSck,    kSdMiso,    kSdMosi); }
+static void vspiToTouch() { vspiMux(kTouchClk, kTouchMiso, kTouchMosi); }
+
+static void tryMountSd() {
+    // SPIClass::begin() will no-op if we try to re-point touch's instance,
+    // so skip SPIClass and drive mux via hal. Attach SD pins first so
+    // SD.begin's internal transfers land on the right pins; our later
+    // vspiToTouch() flips them back.
+    sdSpi.begin(kSdSck, kSdMiso, kSdMosi, kSdCs);     // sets up sdSpi._spi
+    g_vspiBus = spiStartBus(VSPI, SPI_CLOCK_DIV16, SPI_MODE0, SPI_MSBFIRST);
+    g_curSck = kSdSck; g_curMiso = kSdMiso; g_curMosi = kSdMosi;
+
+    bool ok = SD.begin(kSdCs, sdSpi, 4000000);
+    if (!ok) {
+        Serial.println("[sd] mount failed");
+        vspiToTouch();
+        return;
+    }
+    uint8_t t = SD.cardType();
+    if (t == CARD_NONE) {
+        Serial.println("[sd] card type NONE");
+        vspiToTouch();
+        return;
+    }
+    uint64_t sz = SD.cardSize() / (1024ULL * 1024ULL);
+    Serial.printf("[sd] mounted, type=%u size=%lu MB\n",
+                  (unsigned)t, (unsigned long)sz);
+    if (!SD.exists(kCapDir)) {
+        if (!SD.mkdir(kCapDir)) Serial.println("[sd] mkdir failed");
+    }
+    g_sdMounted = true;
+    // Count existing events in file for the status readout.
+    if (SD.exists(kCapFile)) {
+        File f = SD.open(kCapFile, FILE_READ);
+        if (f) {
+            size_t sz2 = f.size();
+            if (sz2 >= 8) g_sdCapTotal = (sz2 - 8) / sizeof(CaptureEvent);
+            f.close();
+        }
+    }
+    vspiToTouch();
+}
+
+static void sdAppendEvent(const CaptureEvent* ev) {
+    if (!g_sdMounted) return;
+    vspiToSd();
+    File f;
+    if (SD.exists(kCapFile)) {
+        f = SD.open(kCapFile, FILE_APPEND);
+    } else {
+        // FILE_WRITE creates+truncates; only use for fresh file + header.
+        f = SD.open(kCapFile, FILE_WRITE);
+        if (f) {
+            uint8_t hdr[8];
+            memcpy(hdr,     &kSdCapMagic, 4);
+            memcpy(hdr + 4, &kSdCapVer,   4);
+            f.write(hdr, 8);
+        }
+    }
+    if (!f) { Serial.println("[sd] open fail"); vspiToTouch(); return; }
+    size_t wrote = f.write((const uint8_t*)ev, sizeof(CaptureEvent));
+    f.close();
+    if (wrote == sizeof(CaptureEvent)) g_sdCapTotal++;
+    else Serial.printf("[sd] short write %u\n", (unsigned)wrote);
+    vspiToTouch();
+}
+
+static void sdLoadLastEvents(int n) {
+    if (!g_sdMounted) return;
+    vspiToSd();
+    if (!SD.exists(kCapFile)) { vspiToTouch(); return; }
+    File f = SD.open(kCapFile, FILE_READ);
+    if (!f) { vspiToTouch(); return; }
+    size_t fsz = f.size();
+    if (fsz <= 8) { f.close(); vspiToTouch(); return; }
+    size_t  nEvents = (fsz - 8) / sizeof(CaptureEvent);
+    int     want = (nEvents < (size_t)n) ? (int)nEvents : n;
+    size_t  offset = 8 + (nEvents - want) * sizeof(CaptureEvent);
+    f.seek(offset);
+    for (int i = 0; i < want; i++) {
+        CaptureEvent ev;
+        if (f.read((uint8_t*)&ev, sizeof(ev)) != sizeof(ev)) break;
+        g_capBuf[g_capHead] = ev;
+        g_capHead = (g_capHead + 1) % kCapCapacity;
+        if (g_capCount < kCapCapacity) g_capCount++;
+    }
+    f.close();
+    Serial.printf("[sd] loaded %d of %u events from captures.bin\n",
+                  want, (unsigned)nEvents);
+    vspiToTouch();
+}
+
+// Hop Trail helpers --------------------------------------------------------
+// Map an FFT bin + tune state back to a BT channel (0..78 = 2402..2480 MHz).
+// Returns -1 when the bin's frequency is outside the ISM band (e.g. WiFi
+// ch 13 at 40 MHz span extends past 2482 MHz; those out-of-band bins must
+// NOT be bucketed into BT 78 or they'd pile up as phantom activity).
+static int hopBinToBtCh(uint8_t binIdx, uint8_t wifiCh, uint8_t spanMode, uint8_t fftN) {
+    int bwMHz;
+    switch ((SpanMode)spanMode) {
+        case SpanMode::S40: bwMHz = 40; break;
+        case SpanMode::S80: bwMHz = 80; break;
+        default:            bwMHz = 16; break;
+    }
+    if (fftN == 0) fftN = 128;
+    int centerMhz = 2407 + wifiCh * 5;
+    int binMhz    = centerMhz - bwMHz / 2 + (binIdx * bwMHz) / fftN;
+    int bt        = binMhz - 2402;
+    if (bt < 0 || bt > 78) return -1;
+    return bt;
+}
+
+// Append a HopEvent if the dominant bin shifted. Debounced to kill the
+// flicker between a true hop and bin-adjacency noise, and gated by a soft
+// level floor so we don't log pure spectrum noise.
+static void hopLog(const FftFrame& f) {
+    uint32_t now = millis();
+    // Scatter ring shift happens on every call -- quiet slots must still age
+    // off the strip, not freeze on screen.
+    if (g_scatterLastShift == 0) g_scatterLastShift = now;
+    while ((now - g_scatterLastShift) >= (uint32_t)kScatterColMs) {
+        g_scatterLastShift += kScatterColMs;
+        g_scatterHead = (g_scatterHead + 1) % kScatterCols;
+        g_scatterRing[g_scatterHead] = 0;
+    }
+
+    int N = f.fftN ? f.fftN : 128;
+
+    // Prime noise floor on first frame with the raw bins.
+    if (!g_binFloorPrimed) {
+        for (int i = 0; i < N; i++) g_binFloor[i] = (uint16_t)f.bins[i] << 4;
+        g_binFloorPrimed = true;
+    } else {
+        // Asymmetric EWMA: climb slow (1/32), descend fast (1/8).
+        for (int i = 0; i < N; i++) {
+            uint16_t cur = g_binFloor[i];
+            uint16_t sample = (uint16_t)f.bins[i] << 4;
+            if (sample > cur) g_binFloor[i] = cur + ((sample - cur) >> 5);
+            else              g_binFloor[i] = cur - ((cur - sample) >> 3);
+        }
+    }
+
+    // Multi-peak detection: pick the top-3 bins above threshold, each at
+    // least kPeakSep bins from any other. Edge-guard rejects bin 0..3 and
+    // N-5..N-1 (DC + aliasing artifacts fake signal there). Per-bin floor
+    // + delta kills uniform noise jitter.
+    constexpr int kMaxPeaks = 3;
+    constexpr int kPeakSep  = 6;   // ~3.75 MHz at 80 MHz span, 128 bins
+    int     pBin[kMaxPeaks];
+    uint8_t pLvl[kMaxPeaks];
+    int     nPeaks = 0;
+    for (int i = kEdgeGuard; i < N - kEdgeGuard; i++) {
+        uint8_t v = f.bins[i];
+        if (v < g_hopMinLevel) continue;
+        // Must stand out above its own local floor by at least g_hopDelta.
+        uint8_t floor = (uint8_t)(g_binFloor[i] >> 4);
+        if (v < floor || (v - floor) < g_hopDelta) continue;
+        bool merged = false;
+        for (int k = 0; k < nPeaks; k++) {
+            int d = pBin[k] - i; if (d < 0) d = -d;
+            if (d < kPeakSep) {
+                if (v > pLvl[k]) { pBin[k] = i; pLvl[k] = v; }
+                merged = true;
+                break;
+            }
+        }
+        if (merged) continue;
+        if (nPeaks < kMaxPeaks) {
+            pBin[nPeaks] = i; pLvl[nPeaks] = v; nPeaks++;
+        } else {
+            int wkIdx = 0;
+            for (int k = 1; k < kMaxPeaks; k++)
+                if (pLvl[k] < pLvl[wkIdx]) wkIdx = k;
+            if (v > pLvl[wkIdx]) { pBin[wkIdx] = i; pLvl[wkIdx] = v; }
+        }
+    }
+    if (nPeaks == 0) return;
+
+    // Log each peak with per-peak debounce. Scan back a few slots since
+    // multi-peak frames write multiple events in a row with distinct bins.
+    int bestBin = pBin[0]; uint8_t bestLvl = pLvl[0];
+    for (int k = 1; k < nPeaks; k++) {
+        if (pLvl[k] > bestLvl) { bestLvl = pLvl[k]; bestBin = pBin[k]; }
+    }
+    for (int k = 0; k < nPeaks; k++) {
+        int peakBin = pBin[k];
+        bool skip = false;
+        int scanBack = (g_hopCount < 8) ? g_hopCount : 8;
+        for (int s = 0; s < scanBack; s++) {
+            int lidx = (g_hopHead - 1 - s + kHopRingSize) % kHopRingSize;
+            const HopEvent& last = g_hopRing[lidx];
+            if ((now - last.tsMs) >= 30) break;
+            int dBin = (int)last.binIdx - peakBin; if (dBin < 0) dBin = -dBin;
+            if (dBin <= 1) { skip = true; break; }
+        }
+        if (skip) continue;
+        // Peek at the next-older ring entry for conn/fast-hop stats BEFORE
+        // we overwrite the slot.
+        int    prevBin = -1;
+        uint32_t prevTs = 0;
+        if (g_hopCount > 0) {
+            int pidx = (g_hopHead - 1 + kHopRingSize) % kHopRingSize;
+            prevBin = g_hopRing[pidx].binIdx;
+            prevTs  = g_hopRing[pidx].tsMs;
+        }
+        HopEvent& ev = g_hopRing[g_hopHead];
+        ev.tsMs     = now;
+        ev.binIdx   = (uint8_t)peakBin;
+        ev.level    = pLvl[k];
+        ev.wifiCh   = g_wifiCh;
+        ev.spanMode = g_wantSpan;
+        g_hopHead = (g_hopHead + 1) % kHopRingSize;
+        if (g_hopCount < kHopRingSize) g_hopCount++;
+        // Hoprun lifetime counters (if a timed run is active).
+        if (g_hoprunActive) {
+            int bt = hopBinToBtCh((uint8_t)peakBin, g_wifiCh, g_wantSpan, N);
+            if (bt >= 0) {       // out-of-band bins ignored
+                g_hoprun.total++;
+                if      (bt == 0)  g_hoprun.adv0++;
+                else if (bt == 24) g_hoprun.adv24++;
+                else if (bt == 78) g_hoprun.adv78++;
+                g_hoprun.perCh[bt]++;
+                if (prevBin >= 0) {
+                    uint32_t dt = (now > prevTs) ? (now - prevTs) : 0;
+                    int d = prevBin - peakBin; if (d < 0) d = -d;
+                    if (dt >= 5 && dt <= 500 && d > 4) {
+                        g_hoprun.connCnt++;
+                        g_hoprun.connDtSum += dt;
+                    }
+                    if (dt >= 1 && dt < 2 && d > 4) g_hoprun.fastHop++;
+                }
+            }
+        }
+    }
+    // Scatter: stamp the strongest peak only (one dominant hop per 50ms slot).
+    int bt = hopBinToBtCh((uint8_t)bestBin, g_wifiCh, g_wantSpan, N);
+    if (bt >= 0) g_scatterRing[g_scatterHead] = (uint8_t)(bt + 1);
+}
+
+static void sdDeleteCapFile() {
+    if (!g_sdMounted) return;
+    vspiToSd();
+    if (SD.exists(kCapFile)) SD.remove(kCapFile);
+    g_sdCapTotal = 0;
+    vspiToTouch();
+}
 
 // Config persistence: set g_cfgDirty from any UI touch that changes a saved
 // field; uiTask flushes it to NVS a short time later (debounced). Helper
@@ -1234,6 +1678,21 @@ static bool inLiveTune(int x, int y) {
         && y >= kCornerBtnY - 4 && y < kCornerBtnY + kCornerBtnH + 4;
 }
 
+// HOP toggle chip: top-right corner (opposite the Home chip), so the readings
+// line between Tune and the chip has room without overlap. Tap flips SPEC/HOP;
+// label shows the destination.
+constexpr int kLiveHopW = 44;
+constexpr int kLiveHopX = 320 - 6 - kLiveHopW;    // 270
+static void drawLiveHopChip() {
+    bool hopActive = (g_liveTab == LiveTab::HOP);
+    drawGlowButton(kLiveHopX, kCornerBtnY, kLiveHopW, kCornerBtnH,
+                   hopActive ? "SPEC" : "HOP", hopActive, 2);
+}
+static bool inLiveHopChip(int x, int y) {
+    return x >= kLiveHopX - 4 && x < kLiveHopX + kLiveHopW + 4
+        && y >= kCornerBtnY - 4 && y < kCornerBtnY + kCornerBtnH + 4;
+}
+
 // ----------------------------------------------------------------------------
 // HOME screen -- Wireless Wizard glow buttons, text labels only (no icons).
 // ----------------------------------------------------------------------------
@@ -1357,24 +1816,24 @@ static void drawLiveFrame(uint16_t ms) {
 
     // ---------- Readings row below the title (updated each redraw) ----------
     char hdr[48];
-    // In 80 MHz WIDE mode the readings show the whole band range; everything
-    // else shows center + BW. Compact format so the string stays inside the
-    // narrow slot right of the Home + Tune chips.
+    // Slot between Tune (ends at x=154) and HOP chip (starts at 270) is only
+    // ~104 px wide; the BW is already shown in the pill strip below, so keep
+    // this line to {freq | peak} and skip BW to avoid clipping into Tune.
     if (g_appliedSpan == SpanMode::S80) {
-        snprintf(hdr, sizeof(hdr), "2402-2482  %s  %d",
+        snprintf(hdr, sizeof(hdr), "ISM %s %d",
                  g_agc ? "AGC" : "MAN", (int)g_latestFrame.peakDbm);
     } else {
-        snprintf(hdr, sizeof(hdr), "%u BW%u %s %d",
-                 (unsigned)g_freqMHz, (unsigned)g_bwMHz,
+        snprintf(hdr, sizeof(hdr), "%u %s %d",
+                 (unsigned)g_freqMHz,
                  g_agc ? "AGC" : "MAN", (int)g_latestFrame.peakDbm);
     }
-    // Clear rect starts right of the Tune chip (which sits right of Home).
-    const int kLiveTuneRight = kCornerBtnX + kCornerBtnW + 8 + kCornerBtnW;
-    tft.fillRect(kLiveTuneRight + 2, 10,
-                 w - (kLiveTuneRight + 2) - 6, 20, color::BG);
+    // Readings sit in the gap between Tune (left) and HOP chip (right).
+    const int kReadingsLeft  = kLiveTuneX + kCornerBtnW + 6;    // 160
+    const int kReadingsRight = kLiveHopX - 6;                   // 264
+    tft.fillRect(kReadingsLeft, 10, kReadingsRight - kReadingsLeft, 20, color::BG);
     tft.setTextDatum(MR_DATUM);
     tft.setTextColor(color::MID, color::BG);
-    tft.drawString(hdr, w - 8, 20, 2);
+    tft.drawString(hdr, kReadingsRight, 20, 2);
 
     // ---------- Peak-hold update (per bin, with slow decay) ---------------
     // Reset if the RF task retuned (new band) or if the live screen just
@@ -1440,6 +1899,34 @@ static void drawLiveFrame(uint16_t ms) {
             g_trigLastFireMs  = millis();
             g_trigFlashFrames = 6;        // ~100 ms at 60Hz
             g_trigArmed       = false;
+            // Record event to the ring buffer if recording is armed.
+            if (g_recordOn && !g_recordFull) {
+                CaptureEvent* ev = &g_capBuf[g_capHead];
+                ev->tsMs      = g_trigLastFireMs;
+                ev->peakBin   = g_latestFrame.peakBin;
+                ev->peakLevel = framePeak;
+                ev->band      = (uint8_t)g_trigBand;
+                ev->wifiCh    = g_wifiCh;
+                ev->spanMode  = g_wantSpan;
+                ev->fftN      = (uint8_t)(N > 255 ? 255 : N);
+                // Max-pool N bins down to 64 so a sparkline fits regardless of N.
+                int stride = N / 64; if (stride < 1) stride = 1;
+                for (int s = 0; s < 64; s++) {
+                    int src = s * stride;
+                    uint8_t m = 0;
+                    for (int k = 0; k < stride && (src + k) < N; k++) {
+                        if (g_latestFrame.bins[src + k] > m) m = g_latestFrame.bins[src + k];
+                    }
+                    ev->snap[s] = m;
+                }
+                g_capHead = (g_capHead + 1) % kCapCapacity;
+                if (g_capCount < kCapCapacity) g_capCount++;
+                else if (!g_recordRing)        g_recordFull = true;
+                if (!g_recordRing && g_capCount >= kCapCapacity) g_recordFull = true;
+                // Mirror to SD if the card is up. SD append is append-only;
+                // RING vs ONE-SHOT only governs the RAM ring.
+                if (g_sdMounted) sdAppendEvent(ev);
+            }
         } else if (!g_trigArmed
                    && framePeak < (int)g_trigThreshold - (int)kTrigHysteresis) {
             g_trigArmed = true;
@@ -1574,14 +2061,11 @@ static void drawLivePills() {
     }
 }
 
-static void drawLive() {
-    tft.fillScreen(color::BG);
-    drawCornerHome();
-    drawLiveTune();
-    // Title removed: the readings strip (freq/BW/mode/peak) drawn by
-    // drawLiveFrame already identifies this screen, and the two were
-    // overlapping in the center of the top row.
+// Forward decls -- HOP tab lives further down the file.
+static void drawLiveHopTab();
+static void drawLiveHopTabTick();
 
+static void drawLiveSpecTab() {
     // plot axes
     tft.drawFastHLine(6, kPlotTop + kPlotHeight, tft.width() - 12, color::DIM);
     tft.drawFastVLine(6, kPlotTop, kPlotHeight, color::DIM);
@@ -1594,6 +2078,531 @@ static void drawLive() {
     // Reset peak-hold on LIVE entry so it starts fresh (don't carry stale
     // marks across a navigate-away-and-back).
     memset(g_peakHold, 0, sizeof(g_peakHold));
+}
+
+static void drawLive() {
+    tft.fillScreen(color::BG);
+    drawCornerHome();
+    drawLiveTune();
+    drawLiveHopChip();
+    // Title removed: the readings strip (freq/BW/mode/peak) drawn by
+    // drawLiveFrame identifies the SPEC view. HOP tab paints its own chrome.
+    if (g_liveTab == LiveTab::HOP) {
+        drawLiveHopTab();
+    } else {
+        drawLiveSpecTab();
+    }
+}
+
+// ----------------------------------------------------------------------------
+// HOP tab -- real-time hop classifier. Three sections:
+//   usage bar (y 40..90):     per-BT-channel activity over last 2 s
+//   time scatter (y 94..170): recent hops plotted (time x channel)
+//   classifier readout:       3 lines summarizing active hoppers
+// Dirty-rect approach: redraw body at ~5 Hz via drawLiveHopTab(), while
+// hopLog() keeps the ring warm at full frame rate.
+// ----------------------------------------------------------------------------
+// Mode chip row -- added for Step B hunt-mode selector.
+constexpr int kHopModeY     = 36,  kHopModeH     = 22;
+constexpr int kHopUsageY    = 64,  kHopUsageH    = 40;
+constexpr int kHopScatterY  = 108, kHopScatterH  = 60;
+constexpr int kHopClassY    = 174, kHopClassH    = 48;
+constexpr int kHopMargin    = 6;
+
+// Classification counts over last 2 s. Written by classifier, read by renderer.
+struct HopClass {
+    uint8_t  usagePerBtCh[79];   // event count per BT channel (last 2 s), saturated 0..255
+    uint8_t  adv0, adv24, adv78;  // event counts on the three BLE adv chs
+    uint16_t wifiBand6, wifiBand11;   // event counts in BT ch bands 25..35 and 50..60
+    uint16_t connCount;          // candidate BLE conn hops (dt in 5..500 ms, bin shift large)
+    uint32_t connIntvEstMs;      // median dt for conn candidates
+    uint16_t fastHop;            // dt < 2 ms count (BT candidate)
+    uint16_t totalRecent;        // events in last 2 s
+    uint8_t  distinctChs;        // count of BT ch with usage > 0
+    uint8_t  topCh;              // most-used BT ch
+    uint16_t topChCount;         // its hit count
+    uint16_t nonTopCount;        // events NOT on topCh +/-1 (hop diversity)
+};
+
+static void classifyHops(HopClass& c) {
+    memset(&c, 0, sizeof(c));
+    if (g_hopCount == 0) return;
+    uint32_t now = millis();
+    // Walk ring from newest backwards; stop when older than 2 s.
+    int    head  = g_hopHead;
+    int    count = g_hopCount;
+    uint16_t connDtAcc[64]; uint8_t connDtN = 0;
+    const HopEvent* prev = nullptr;
+    for (int i = 0; i < count; i++) {
+        int    idx = (head - 1 - i + kHopRingSize) % kHopRingSize;
+        const HopEvent& ev = g_hopRing[idx];
+        uint32_t age = now - ev.tsMs;
+        if (age > 2000) break;
+        int bt = hopBinToBtCh(ev.binIdx, ev.wifiCh, ev.spanMode, 128);
+        if (bt < 0) continue;   // out-of-band -- ignore
+        c.totalRecent++;
+        if (c.usagePerBtCh[bt] < 255) c.usagePerBtCh[bt]++;
+        if      (bt == 0)   c.adv0++;
+        else if (bt == 24)  c.adv24++;
+        else if (bt == 78)  c.adv78++;
+        if (bt >= 25 && bt <= 35) c.wifiBand6++;
+        if (bt >= 50 && bt <= 60) c.wifiBand11++;
+        // Dt + hop classification against the NEXT-older event (prev iter in time)
+        if (prev) {
+            uint32_t dt = (prev->tsMs > ev.tsMs) ? (prev->tsMs - ev.tsMs) : 0;
+            int d = (int)prev->binIdx - ev.binIdx; if (d < 0) d = -d;
+            // dt == 0 means same-ts multi-peak co-log, not a real hop
+            if (dt >= 1 && dt < 2 && d > 4) c.fastHop++;
+            if (dt >= 5 && dt <= 500 && d > 4) {
+                c.connCount++;
+                if (connDtN < 64) connDtAcc[connDtN++] = (uint16_t)dt;
+            }
+        }
+        prev = &ev;
+    }
+    if (connDtN > 0) {
+        // Pick median -- simple insertion sort of a small buffer.
+        for (int i = 1; i < connDtN; i++) {
+            uint16_t v = connDtAcc[i]; int j = i - 1;
+            while (j >= 0 && connDtAcc[j] > v) { connDtAcc[j + 1] = connDtAcc[j]; j--; }
+            connDtAcc[j + 1] = v;
+        }
+        c.connIntvEstMs = connDtAcc[connDtN / 2];
+    }
+    // Diversity metrics: a true BLE conn visits many data channels; WiFi
+    // ch 6/7/11 bursts cluster tightly around one center. We need both.
+    int top = 0, topCnt = 0;
+    for (int bt = 0; bt < 79; bt++) {
+        if (c.usagePerBtCh[bt] > 0) c.distinctChs++;
+        if (c.usagePerBtCh[bt] > topCnt) { topCnt = c.usagePerBtCh[bt]; top = bt; }
+    }
+    c.topCh = (uint8_t)top;
+    c.topChCount = (uint16_t)topCnt;
+    // Events not within +/-2 bins of topCh (= off-dominant-carrier)
+    int offTop = 0;
+    for (int bt = 0; bt < 79; bt++) {
+        if (bt >= top - 2 && bt <= top + 2) continue;
+        offTop += c.usagePerBtCh[bt];
+    }
+    c.nonTopCount = (uint16_t)offTop;
+}
+
+// On-target: whether a given BT ch is one of the mode's hunt channels.
+// Off-target events are suppressed in the usage bar + scatter so each
+// mode's view only paints what it's actually hunting.
+static bool hopIsOnTarget(int bt) {
+    switch (g_hopMode) {
+        case HopMode::ADV_CYCLE:
+        case HopMode::ADV_LOCK_37:
+        case HopMode::ADV_LOCK_38:
+        case HopMode::ADV_LOCK_39: {
+            int d0  = bt;         if (d0  < 0) d0  = -d0;
+            int d24 = bt - 24;    if (d24 < 0) d24 = -d24;
+            int d78 = bt - 78;    if (d78 < 0) d78 = -d78;
+            return (d0 <= 3 || d24 <= 3 || d78 <= 3);
+        }
+        case HopMode::CONN: {
+            // BLE data chs = even BT except 0 (adv 37), 24 (adv 38), 78 (adv 39)
+            if (bt == 0 || bt == 24 || bt == 78) return false;
+            return (bt & 1) == 0;
+        }
+        default: return false;    // placeholder modes paint nothing
+    }
+}
+static uint16_t hopColForBtCh(int /*bt*/) {
+    return (g_hopMode == HopMode::CONN) ? color::BRIGHT     // cyan for conn hops
+                                        : color::WARN_AMBER; // amber for adv
+}
+
+// --- Usage bar: per-column dirty redraw --------------------------------
+static void hopDrawUsageBar(const HopClass& cls) {
+    const int baseY = kHopUsageY + kHopUsageH - 2;
+    const int W = 320 - 2 * kHopMargin;
+    for (int bt = 0; bt < 79; bt++) {
+        // ADV mode: zero out off-target channels so we never paint them.
+        // Dirty check still fires so any previously-painted bar gets
+        // cleared when the mode starts.
+        int usage = hopIsOnTarget(bt) ? cls.usagePerBtCh[bt] : 0;
+        int newH = (usage > 15 ? 15 : usage) * (kHopUsageH - 8) / 15;
+        if (newH < 0) newH = 0;
+        if (newH == (int)g_hopUsageLastH[bt]) continue;
+        int oldH = g_hopUsageLastH[bt];
+        g_hopUsageLastH[bt] = (uint8_t)newH;
+        int x0 = kHopMargin + (bt * W) / 79;
+        int x1 = kHopMargin + ((bt + 1) * W) / 79;
+        int w = x1 - x0 - 1; if (w < 2) w = x1 - x0;
+        int clearH = (oldH > newH ? oldH : newH);
+        if (clearH > 0) {
+            tft.fillRect(x0, baseY - clearH, w, clearH, color::BG);
+        }
+        if (newH > 0) {
+            tft.fillRect(x0, baseY - newH, w, newH, hopColForBtCh(bt));
+        }
+    }
+}
+
+// --- Scatter strip: scrolling ring, per-column dirty redraw ------------
+static void hopDrawScatter() {
+    const int sxL = kHopMargin + 1;
+    const int sxR = 320 - kHopMargin - 1;
+    const int sxW = sxR - sxL;
+    const int syT = kHopScatterY + 7;
+    const int syB = kHopScatterY + kHopScatterH - 3;
+    const int syH = syB - syT;
+    for (int c = 0; c < kScatterCols; c++) {
+        // Column c (left to right) reads from ring offset after head.
+        int ringIdx = (g_scatterHead + 1 + c) % kScatterCols;
+        uint8_t v = g_scatterRing[ringIdx];
+        if (v == g_scatterLastDrawn[c]) continue;
+        g_scatterLastDrawn[c] = v;
+        int x0 = sxL + (c * sxW) / kScatterCols;
+        int x1 = sxL + ((c + 1) * sxW) / kScatterCols;
+        int w = x1 - x0; if (w < 1) w = 1;
+        // Clear the column's full inner height (fast single rect)
+        tft.fillRect(x0, syT, w, syH, color::BG);
+        if (v > 0) {
+            int bt = v - 1;
+            if (hopIsOnTarget(bt)) {
+                int y = syB - (bt * (syH - 2)) / 79;
+                tft.fillRect(x0, y, w, 2, hopColForBtCh(bt));
+            }
+            // Off-target: cleared above, no dot drawn.
+        }
+    }
+}
+
+// --- Classifier readout: 3 lines, text-cache dirty redraw -------------
+// Classifier text is mode-aware. In ADV modes we only honestly know
+// per-adv-channel hit counts; "BLE conn" / "WiFi" classification from
+// SURVEY mode is removed because the narrow-span capture can't support
+// those claims. Placeholder modes show a "not yet" readout.
+static void hopFormatLine_ADV(int row, const HopClass& cls,
+                              char* main, size_t mainSz,
+                              char* sub,  size_t subSz,
+                              uint16_t& markerCol) {
+    static const int    kBle[3]   = { 37, 38, 39 };
+    static const uint16_t kMhz[3] = { 2402, 2426, 2480 };
+    markerCol = color::WARN_AMBER;
+    unsigned hits = 0;
+    switch (row) {
+        case 0: hits = cls.adv0;  break;
+        case 1: hits = cls.adv24; break;
+        case 2: hits = cls.adv78; break;
+    }
+    // Visual cue: the ADV channel the device is currently tuned to or
+    // locked on gets its row marked. In CYCLE mode the current slot
+    // determines that; in LOCK mode it's fixed.
+    int tuned = -1;
+    if      (g_hopMode == HopMode::ADV_LOCK_37) tuned = 0;
+    else if (g_hopMode == HopMode::ADV_LOCK_38) tuned = 1;
+    else if (g_hopMode == HopMode::ADV_LOCK_39) tuned = 2;
+    else if (g_hopMode == HopMode::ADV_CYCLE)   tuned = g_hopCycleIdx;
+    const char* mark = (row == tuned) ? "*" : " ";
+    snprintf(main, mainSz, "%sBLE %d:", mark, kBle[row]);
+    snprintf(sub,  subSz,  "%u (%u MHz)", hits, (unsigned)kMhz[row]);
+}
+
+// CONN hunt: BLE connections hop across the 37 data channels (even BT chs
+// 2..22 + 26..76). We measure how many distinct data chs got hits in the
+// last 2 s, how many total data-ch events, and the median conn-candidate
+// interval. Real BLE conn fingerprint = broad channel coverage + regular
+// inter-hop interval. Thin coverage or no interval = probably not a conn.
+static void hopFormatLine_CONN(int row, const HopClass& cls,
+                               char* main, size_t mainSz,
+                               char* sub,  size_t subSz,
+                               uint16_t& markerCol) {
+    markerCol = color::BRIGHT;
+    int dataHits = 0;
+    int dataChs  = 0;
+    for (int bt = 2; bt < 78; bt += 2) {
+        if (bt == 24) continue;    // adv 38, not data
+        if (cls.usagePerBtCh[bt] > 0) {
+            dataHits += cls.usagePerBtCh[bt];
+            dataChs++;
+        }
+    }
+    if (row == 0) {
+        snprintf(main, mainSz, "data hits:");
+        snprintf(sub,  subSz,  "%d  in %d ch", dataHits, dataChs);
+    } else if (row == 1) {
+        if (cls.connCount >= 5 && dataChs >= 4 && cls.connIntvEstMs >= 5) {
+            snprintf(main, mainSz, "interval:");
+            snprintf(sub,  subSz,  "~%u ms", (unsigned)cls.connIntvEstMs);
+        } else {
+            snprintf(main, mainSz, "interval:");
+            snprintf(sub,  subSz,  "n/a");
+        }
+    } else {
+        snprintf(main, mainSz, "coverage:");
+        snprintf(sub,  subSz,  "%d / 37 chs", dataChs);
+    }
+}
+
+static void hopFormatLine_NotImpl(int row, const char* name,
+                                  char* main, size_t mainSz,
+                                  char* sub,  size_t subSz,
+                                  uint16_t& markerCol) {
+    markerCol = color::DIM;
+    if (row == 0) {
+        snprintf(main, mainSz, "%s hunt:", name);
+        snprintf(sub,  subSz,  "not yet");
+    } else if (row == 1) {
+        snprintf(main, mainSz, "coming later");
+        sub[0] = 0;
+    } else {
+        snprintf(main, mainSz, "tap CYC/37/38/39");
+        sub[0] = 0;
+    }
+}
+
+static void hopFormatLine(int row, const HopClass& cls,
+                          char* main, size_t mainSz,
+                          char* sub,  size_t subSz,
+                          uint16_t& markerCol) {
+    switch (g_hopMode) {
+        case HopMode::ADV_CYCLE:
+        case HopMode::ADV_LOCK_37:
+        case HopMode::ADV_LOCK_38:
+        case HopMode::ADV_LOCK_39:
+            hopFormatLine_ADV(row, cls, main, mainSz, sub, subSz, markerCol);
+            break;
+        case HopMode::CONN:
+            hopFormatLine_CONN(row, cls, main, mainSz, sub, subSz, markerCol);
+            break;
+        case HopMode::WIFI:
+            hopFormatLine_NotImpl(row, "WIFI", main, mainSz, sub, subSz, markerCol);
+            break;
+        case HopMode::ZB:
+            hopFormatLine_NotImpl(row, "ZB",   main, mainSz, sub, subSz, markerCol);
+            break;
+    }
+}
+
+static void hopDrawClassifier(const HopClass& cls) {
+    for (int row = 0; row < 3; row++) {
+        char main[40]; char sub[24]; uint16_t markerCol = color::BRIGHT;
+        hopFormatLine(row, cls, main, sizeof(main), sub, sizeof(sub), markerCol);
+        int lineY = kHopClassY + 8 + row * 16;
+        if (strcmp(main, g_hopClassMainCache[row]) != 0) {
+            strncpy(g_hopClassMainCache[row], main, sizeof(g_hopClassMainCache[0]) - 1);
+            g_hopClassMainCache[row][sizeof(g_hopClassMainCache[0]) - 1] = 0;
+            tft.fillRect(kHopMargin, lineY - 8, 174 - kHopMargin, 16, color::BG);
+            tft.fillCircle(kHopMargin + 4, lineY, 3, markerCol);
+            tft.setTextDatum(ML_DATUM);
+            tft.setTextColor(color::BRIGHT, color::BG);
+            tft.drawString(main, kHopMargin + 14, lineY, 2);
+        }
+        if (strcmp(sub, g_hopClassSubCache[row]) != 0) {
+            strncpy(g_hopClassSubCache[row], sub, sizeof(g_hopClassSubCache[0]) - 1);
+            g_hopClassSubCache[row][sizeof(g_hopClassSubCache[0]) - 1] = 0;
+            tft.fillRect(180, lineY - 8, 320 - 180 - 4, 16, color::BG);
+            tft.setTextDatum(ML_DATUM);
+            tft.setTextColor(color::MID, color::BG);
+            tft.drawString(sub, 180, lineY, 2);
+        }
+    }
+}
+
+// Returns the inclusive BT-ch range the current span can see.
+static void hopVisibleBtRange(int& lo, int& hi) {
+    int bwMHz;
+    switch (g_wantSpan) {
+        case (uint8_t)SpanMode::S40: bwMHz = 40; break;
+        case (uint8_t)SpanMode::S80: bwMHz = 80; break;
+        default:                     bwMHz = 16; break;
+    }
+    int centerMhz = 2407 + g_wifiCh * 5;
+    lo = centerMhz - bwMHz / 2 - 2402;
+    hi = centerMhz + bwMHz / 2 - 2402;
+    if (lo < 0)  lo = 0;
+    if (hi > 78) hi = 78;
+}
+
+// Called once from drawLive() on entering the HOP tab: paints the fixed
+// chrome (section labels + section borders) and primes dirty caches so the
+// next tick fills every cell. No whole-body fillRect at any point.
+// ---- Mode chip row ------------------------------------------------------
+// Seven chips: CYC | 37 | 38 | 39   | CONN | WIFI | ZB
+// Indices 0..3 are ADV sub-modes (active), 4..6 are placeholders (dim).
+constexpr int kHopChipW   = 38;
+constexpr int kHopChipGap = 5;
+constexpr int kHopChipSep = 10;   // extra gap between the ADV group and the rest
+static void hopModeChipRect(int idx, int& x, int& y, int& w, int& h) {
+    y = kHopModeY; h = kHopModeH; w = kHopChipW;
+    if (idx < 4) {
+        x = kHopMargin + idx * (kHopChipW + kHopChipGap);
+    } else {
+        x = kHopMargin + 4 * (kHopChipW + kHopChipGap) + kHopChipSep
+          + (idx - 4) * (kHopChipW + kHopChipGap);
+    }
+}
+static const char* const kHopChipLbl[7] = { "CYC", "37", "38", "39", "CONN", "WIFI", "ZB" };
+
+static void drawHopModeChips() {
+    for (int i = 0; i < 7; i++) {
+        int x, y, w, h; hopModeChipRect(i, x, y, w, h);
+        // Enabled hunts: 0..3 (ADV sub-modes) + 4 (CONN). 5=WIFI, 6=ZB stubs.
+        bool enabled = (i <= 4);
+        bool on      = ((int)g_hopMode == i);
+        if (enabled) {
+            drawGlowButton(x, y, w, h, kHopChipLbl[i], on, 2);
+        } else if (on) {
+            // Selected placeholder: amber ring + amber text to signal
+            // "mode selected but not implemented yet."
+            tft.drawRoundRect(x, y, w, h, 4, color::WARN_AMBER);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(color::WARN_AMBER, color::BG);
+            tft.drawString(kHopChipLbl[i], x + w / 2, y + h / 2, 1);
+        } else {
+            // Idle placeholder: dim ring + dim text.
+            tft.drawRoundRect(x, y, w, h, 4, color::DIM);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(color::DIM, color::BG);
+            tft.drawString(kHopChipLbl[i], x + w / 2, y + h / 2, 1);
+        }
+    }
+}
+static bool inHopModeChip(int tx, int ty, int& outIdx) {
+    if (ty < kHopModeY - 4 || ty >= kHopModeY + kHopModeH + 4) return false;
+    for (int i = 0; i < 7; i++) {
+        int x, y, w, h; hopModeChipRect(i, x, y, w, h);
+        if (tx >= x - 2 && tx < x + w + 2) { outIdx = i; return true; }
+    }
+    return false;
+}
+
+// ---- Mode state transitions ---------------------------------------------
+static void hopApplyMode(HopMode m) {
+    g_hopMode = m;
+    switch (m) {
+        case HopMode::ADV_LOCK_37:
+            g_wifiCh = kAdvTunes[0].wifiCh; g_wantSpan = kAdvTunes[0].span;
+            break;
+        case HopMode::ADV_LOCK_38:
+            g_wifiCh = kAdvTunes[1].wifiCh; g_wantSpan = kAdvTunes[1].span;
+            break;
+        case HopMode::ADV_LOCK_39:
+            g_wifiCh = kAdvTunes[2].wifiCh; g_wantSpan = kAdvTunes[2].span;
+            break;
+        case HopMode::ADV_CYCLE:
+            g_hopCycleIdx    = 0;
+            g_wifiCh         = kAdvTunes[0].wifiCh;
+            g_wantSpan       = kAdvTunes[0].span;
+            g_hopCycleNextMs = millis() + kHopCycleDwellMs;
+            break;
+        case HopMode::CONN:
+            g_hopCycleIdx    = 0;
+            g_wifiCh         = kConnTunes[0].wifiCh;
+            g_wantSpan       = kConnTunes[0].span;
+            g_hopCycleNextMs = millis() + kHopCycleDwellMs;
+            break;
+        default: break;  // WIFI/ZB stubs
+    }
+    // Invalidate per-bin floor so the previous tune's noise profile doesn't
+    // mask fresh events on the new center freq.
+    g_binFloorPrimed = false;
+}
+
+static void hopEnterTab() {
+    if (!g_hopTuneSaved) {
+        g_hopSaveCh    = g_wifiCh;
+        g_hopSaveSpan  = g_wantSpan;
+        g_hopTuneSaved = true;
+    }
+    hopApplyMode(g_hopMode);
+}
+static void hopExitTab() {
+    if (g_hopTuneSaved) {
+        g_wifiCh       = g_hopSaveCh;
+        g_wantSpan     = g_hopSaveSpan;
+        g_hopTuneSaved = false;
+    }
+}
+// Called each frame-drain tick when HOP tab is up. Advances the per-mode
+// cycle by retuning every kHopCycleDwellMs milliseconds. ADV_CYCLE rotates
+// through 3 adv tunes; CONN rotates between 2 data-ch tunes.
+static void hopCycleTick() {
+    uint32_t now = millis();
+    if ((int32_t)(now - g_hopCycleNextMs) < 0) return;
+    if (g_hopMode == HopMode::ADV_CYCLE) {
+        g_hopCycleIdx    = (g_hopCycleIdx + 1) % 3;
+        g_wifiCh         = kAdvTunes[g_hopCycleIdx].wifiCh;
+        g_wantSpan       = kAdvTunes[g_hopCycleIdx].span;
+    } else if (g_hopMode == HopMode::CONN) {
+        g_hopCycleIdx    = (g_hopCycleIdx + 1) % 2;
+        g_wifiCh         = kConnTunes[g_hopCycleIdx].wifiCh;
+        g_wantSpan       = kConnTunes[g_hopCycleIdx].span;
+    } else {
+        return;    // non-cycling modes
+    }
+    g_hopCycleNextMs = now + kHopCycleDwellMs;
+    g_binFloorPrimed = false;
+}
+
+static void drawLiveHopTab() {
+    // Mode chip row (static chrome for this tab)
+    tft.fillRect(0, kHopModeY - 2, 320, kHopModeH + 4, color::BG);
+    drawHopModeChips();
+
+    // Section 1 header + baseline (fixed, drawn once per enter)
+    tft.fillRect(0, kHopUsageY - 2, 320, kHopUsageH + 4, color::BG);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color::DIM, color::BG);
+    tft.drawString("usage 2s", kHopMargin, kHopUsageY, 1);
+    const int baseY = kHopUsageY + kHopUsageH - 2;
+    tft.drawFastHLine(kHopMargin, baseY + 1, 320 - 2 * kHopMargin, color::DIM);
+    // Visible-band bracket: dim outline on the usage bar showing which BT
+    // channels the current tune actually covers (16/40/80 MHz span).
+    int vLo, vHi; hopVisibleBtRange(vLo, vHi);
+    const int W = 320 - 2 * kHopMargin;
+    int bx0 = kHopMargin + (vLo * W) / 79;
+    int bx1 = kHopMargin + ((vHi + 1) * W) / 79;
+    tft.drawRect(bx0, kHopUsageY + 10, bx1 - bx0, kHopUsageH - 12, color::DIM);
+
+    // Section 2 header + scatter border
+    tft.fillRect(0, kHopScatterY, 320, kHopScatterH, color::BG);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color::DIM, color::BG);
+    tft.drawString("time -> now  5s", kHopMargin, kHopScatterY + 3, 1);
+    tft.drawRect(kHopMargin, kHopScatterY + 6, 320 - 2 * kHopMargin,
+                 kHopScatterH - 8, color::DIM);
+
+    // Section 3 divider
+    tft.fillRect(0, kHopClassY - 2, 320, kHopClassH + 2, color::BG);
+    tft.drawFastHLine(kHopMargin, kHopClassY - 2, 320 - 2 * kHopMargin, color::DIM);
+
+    // Reset dirty caches so the next paint fills every live cell from BG.
+    memset(g_hopUsageLastH,    0, sizeof(g_hopUsageLastH));
+    memset(g_scatterLastDrawn, 0, sizeof(g_scatterLastDrawn));
+    memset(g_hopClassMainCache, 0, sizeof(g_hopClassMainCache));
+    memset(g_hopClassSubCache,  0, sizeof(g_hopClassSubCache));
+    g_hopLastRateShown = -1;
+    g_hopTabPrimed = true;
+    // First-paint pass: push current state onto screen through the dirty path.
+    HopClass cls; classifyHops(cls);
+    hopDrawUsageBar(cls);
+    hopDrawScatter();
+    hopDrawClassifier(cls);
+}
+
+// Incremental update, called from the frame-drain tick when HOP tab is up.
+static void drawLiveHopTabTick() {
+    if (!g_hopTabPrimed) return;
+    HopClass cls; classifyHops(cls);
+    hopDrawUsageBar(cls);
+    hopDrawScatter();
+    hopDrawClassifier(cls);
+    // Hops/sec diagnostic: totalRecent is a 2s count, divide for /s.
+    int rate = cls.totalRecent / 2;
+    if (rate != g_hopLastRateShown) {
+        g_hopLastRateShown = rate;
+        char buf[20];
+        snprintf(buf, sizeof(buf), "%d/s  ch 0..78", rate);
+        tft.fillRect(220, kHopUsageY - 6, 94, 12, color::BG);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(color::DIM, color::BG);
+        tft.drawString(buf, 314, kHopUsageY, 1);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -1976,11 +2985,42 @@ static void trigAdjRects(int& xM10, int& xM1, int& xV, int& xP1, int& xP10,
     xP10 = xP1  + wStep + gap;
 }
 
-static void drawTriggerScreen() {
-    tft.fillScreen(color::BG);
-    drawCornerHome();
-    drawGlowTitle("TRIGGER", tft.width() / 2, 20, 4);
+// -----------------------------------------------------------------------------
+// TRIGGER tab bar -- CFG | REC | CAPS, right of the corner Home button.
+// -----------------------------------------------------------------------------
+constexpr int kTrigTabH    = 26;
+constexpr int kTrigTabY    = 6;
+constexpr int kTrigTabW    = 60;
+constexpr int kTrigTabGap  = 6;
+constexpr int kTrigTabX0   = kCornerBtnX + kCornerBtnW + 10;   // right of Home
 
+static void trigTabRect(int idx, int& x, int& y, int& w, int& h) {
+    x = kTrigTabX0 + idx * (kTrigTabW + kTrigTabGap);
+    y = kTrigTabY; w = kTrigTabW; h = kTrigTabH;
+}
+static void drawTrigTabBar() {
+    static const char* lbl[3] = { "CFG", "REC", "CAPS" };
+    for (int i = 0; i < 3; i++) {
+        int x, y, w, h; trigTabRect(i, x, y, w, h);
+        drawGlowButton(x, y, w, h, lbl[i], (int)g_trigTab == i, 2);
+    }
+}
+static bool inTrigTabBar(int tx, int ty, TrigTab& which) {
+    if (ty < kTrigTabY - 4 || ty >= kTrigTabY + kTrigTabH + 4) return false;
+    for (int i = 0; i < 3; i++) {
+        int x, y, w, h; trigTabRect(i, x, y, w, h);
+        if (tx >= x - 4 && tx < x + w + 4) {
+            which = (TrigTab)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+// CFG tab -- the original threshold / band / fires UI (unchanged behavior).
+// -----------------------------------------------------------------------------
+static void drawTrigCfgTab() {
     // Enable toggle (full-width)
     const int x = kTrigMargin, w = 320 - 2 * kTrigMargin;
     drawGlowButton(x, kTrigEnableY, w, kTrigEnableH, "", true, 2);
@@ -2039,7 +3079,7 @@ static void drawTriggerScreen() {
     }
 }
 
-static bool triggerTouch(int tx, int ty) {
+static bool trigCfgTouch(int tx, int ty) {
     // Enable toggle
     const int w = 320 - 2 * kTrigMargin;
     if (tx >= kTrigMargin && tx < kTrigMargin + w
@@ -2087,6 +3127,263 @@ static bool triggerTouch(int tx, int ty) {
     if (next > 255) next = 255;
     g_trigThreshold = (uint8_t)next;
     return true;
+}
+
+// -----------------------------------------------------------------------------
+// REC tab -- Record toggle, Ring/One-Shot mode, buffer bar, Clear.
+// -----------------------------------------------------------------------------
+constexpr int kRecRecY   = 44, kRecRecH   = 44;    // record toggle
+constexpr int kRecModeY  = 100, kRecModeH = 28;    // ring/one-shot
+constexpr int kRecBarY   = 142, kRecBarH  = 18;
+constexpr int kRecStatY  = 172;
+constexpr int kRecClearY = 192, kRecClearH = 36;
+
+static void drawTrigRecTab() {
+    // Record toggle
+    const int x = kTrigMargin, w = 320 - 2 * kTrigMargin;
+    drawGlowButton(x, kRecRecY, w, kRecRecH, "", true, 2);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(g_recordOn ? color::OK_GREEN : color::DIM, color::BG);
+    tft.drawString(g_recordOn ? (g_recordFull ? "RECORD  FULL" : "RECORD  ON")
+                              : "RECORD  OFF",
+                   x + w / 2, kRecRecY + kRecRecH / 2, 4);
+
+    // Mode row: RING | ONE-SHOT
+    const int halfW = (w - 6) / 2;
+    drawGlowButton(x,           kRecModeY, halfW, kRecModeH, "RING",      g_recordRing,  2);
+    drawGlowButton(x + halfW+6, kRecModeY, halfW, kRecModeH, "ONE-SHOT", !g_recordRing, 2);
+
+    // Buffer bar
+    const int barX = x + 20, barW = w - 40;
+    tft.drawRect(barX, kRecBarY, barW, kRecBarH, color::MID);
+    int filled = (g_capCount * (barW - 2)) / kCapCapacity;
+    if (filled > 0) {
+        tft.fillRect(barX + 1, kRecBarY + 1, filled, kRecBarH - 2,
+                     g_recordFull ? color::WARN_AMBER : color::OK_GREEN);
+    }
+    char stat[48];
+    snprintf(stat, sizeof(stat), "RAM %d / %d", g_capCount, kCapCapacity);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString(stat, 320 / 2, kRecStatY, 2);
+
+    // SD status line (right below the RAM line)
+    char sdLine[48];
+    if (g_sdMounted) {
+        snprintf(sdLine, sizeof(sdLine), "SD %lu total", (unsigned long)g_sdCapTotal);
+        tft.setTextColor(color::OK_GREEN, color::BG);
+    } else {
+        snprintf(sdLine, sizeof(sdLine), "SD not present");
+        tft.setTextColor(color::DIM, color::BG);
+    }
+    tft.drawString(sdLine, 320 / 2, kRecStatY + 14, 1);
+
+    // Clear button
+    drawGlowButton(x, kRecClearY, w, kRecClearH,
+                   g_sdMounted ? "CLEAR RAM + SD" : "CLEAR BUFFER", true, 2);
+}
+
+static bool trigRecTouch(int tx, int ty) {
+    const int x = kTrigMargin, w = 320 - 2 * kTrigMargin;
+    if (tx < x || tx >= x + w) return false;
+    // Record toggle
+    if (ty >= kRecRecY && ty < kRecRecY + kRecRecH) {
+        g_recordOn = !g_recordOn;
+        if (g_recordOn && g_recordFull && !g_recordRing) {
+            // Resuming after one-shot full means user wants fresh ring; keep buffer.
+            // Actually: don't resume logging until they clear or switch to ring.
+        }
+        return true;
+    }
+    // Mode row
+    const int halfW = (w - 6) / 2;
+    if (ty >= kRecModeY && ty < kRecModeY + kRecModeH) {
+        if (tx < x + halfW)             g_recordRing = true;
+        else if (tx >= x + halfW + 6)   g_recordRing = false;
+        if (g_recordRing) g_recordFull = false;
+        return true;
+    }
+    // Clear button
+    if (ty >= kRecClearY && ty < kRecClearY + kRecClearH) {
+        g_capCount = 0;
+        g_capHead  = 0;
+        g_recordFull = false;
+        if (g_sdMounted) sdDeleteCapFile();
+        return true;
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+// CAPS tab -- scrolling list of CaptureEvents, newest first, with sparkline.
+// -----------------------------------------------------------------------------
+constexpr int kCapRowH      = 36;
+constexpr int kCapListTop   = 40;
+constexpr int kCapListBot   = 232;
+constexpr int kCapScrollW   = 28;              // right-edge scroll strip
+
+static int capRowsVisible() {
+    return (kCapListBot - kCapListTop) / kCapRowH;
+}
+
+// Returns the event at logical "newest-first index i" (0 = newest).
+static const CaptureEvent* capAt(int i) {
+    if (i < 0 || i >= g_capCount) return nullptr;
+    // Latest written is at (g_capHead - 1) mod capacity.
+    int idx = g_capHead - 1 - i;
+    while (idx < 0) idx += kCapCapacity;
+    idx %= kCapCapacity;
+    return &g_capBuf[idx];
+}
+
+// Convert bin -> MHz given WiFi channel + span used at fire time.
+static uint16_t capFreqMhz(const CaptureEvent* ev) {
+    int centerKHz = 2407000 + (int)ev->wifiCh * 5000;
+    int bwMHz;
+    switch ((SpanMode)ev->spanMode) {
+        case SpanMode::S40: bwMHz = 40; break;
+        case SpanMode::S80: bwMHz = 80; break;
+        default:            bwMHz = 16; break;
+    }
+    // bin 0 = center - bw/2, bin fftN-1 = center + bw/2
+    int binMhz = (int)ev->peakBin * bwMHz / (ev->fftN ? ev->fftN : 128);
+    int freqKHz = centerKHz - bwMHz * 500 + binMhz * 1000;
+    return (uint16_t)((freqKHz + 500) / 1000);
+}
+
+static void drawTrigCapsTab() {
+    const int left   = kTrigMargin;
+    const int rowsN  = capRowsVisible();
+    const int listRt = 320 - kTrigMargin - kCapScrollW;
+    const int listW  = listRt - left;
+
+    if (g_capCount == 0) {
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(color::MID, color::BG);
+        tft.drawString("No captures yet",
+                       320 / 2, (kCapListTop + kCapListBot) / 2 - 8, 4);
+        tft.setTextColor(color::DIM, color::BG);
+        tft.drawString("Enable TRIGGER on CFG + RECORD on REC",
+                       320 / 2, (kCapListTop + kCapListBot) / 2 + 20, 2);
+    } else {
+        for (int r = 0; r < rowsN; r++) {
+            int idx = g_capScroll + r;
+            const CaptureEvent* ev = capAt(idx);
+            int ry = kCapListTop + r * kCapRowH;
+            if (!ev) continue;
+            // Row frame
+            tft.drawRect(left, ry, listW, kCapRowH - 2, color::MID);
+            // Freq label (large)
+            uint16_t mhz = capFreqMhz(ev);
+            char fbuf[20];
+            snprintf(fbuf, sizeof(fbuf), "%u MHz", (unsigned)mhz);
+            tft.setTextDatum(ML_DATUM);
+            tft.setTextColor(color::OK_GREEN, color::BG);
+            tft.drawString(fbuf, left + 6, ry + 11, 2);
+            // Age + level (smaller, under freq)
+            uint32_t ageMs = millis() - ev->tsMs;
+            char ageBuf[32];
+            if (ageMs < 60000) snprintf(ageBuf, sizeof(ageBuf), "%lus  lv %u",
+                                        (unsigned long)(ageMs / 1000), (unsigned)ev->peakLevel);
+            else               snprintf(ageBuf, sizeof(ageBuf), "%lum  lv %u",
+                                        (unsigned long)(ageMs / 60000), (unsigned)ev->peakLevel);
+            tft.setTextColor(color::DIM, color::BG);
+            tft.drawString(ageBuf, left + 6, ry + 25, 1);
+            // Sparkline on right side of row
+            const int spX = left + listW / 2 + 6;
+            const int spY = ry + 4;
+            const int spW = listW - (listW / 2 + 6) - 6;
+            const int spH = kCapRowH - 10;
+            tft.drawRect(spX, spY, spW, spH, color::DIM);
+            // Draw 64 bins into spW pixels (compressed if spW<64, stretched if >)
+            for (int s = 0; s < 64; s++) {
+                int xS = spX + 1 + (s * (spW - 2)) / 64;
+                int xE = spX + 1 + ((s + 1) * (spW - 2)) / 64;
+                if (xE <= xS) xE = xS + 1;
+                int h = (ev->snap[s] * (spH - 2)) / 255;
+                if (h > 0) {
+                    tft.fillRect(xS, spY + spH - 1 - h, xE - xS, h, color::OK_GREEN);
+                }
+            }
+            // Peak marker on sparkline
+            int pMarkX = spX + 1 + (ev->peakBin * (spW - 2))
+                       / (ev->fftN ? ev->fftN : 128);
+            if (pMarkX >= spX && pMarkX < spX + spW) {
+                tft.drawFastVLine(pMarkX, spY, spH, color::WARN_AMBER);
+            }
+        }
+    }
+
+    // Scroll strip (up/down buttons)
+    const int sbX = 320 - kTrigMargin - kCapScrollW;
+    const int upY = kCapListTop;
+    const int dnY = kCapListBot - kCapScrollW;
+    drawGlowButton(sbX, upY, kCapScrollW, kCapScrollW, "+", true, 4);
+    drawGlowButton(sbX, dnY, kCapScrollW, kCapScrollW, "-", true, 4);
+    // Scroll position indicator (small bar in middle)
+    const int midTop = upY + kCapScrollW + 4;
+    const int midBot = dnY - 4;
+    const int midH   = midBot - midTop;
+    tft.drawRect(sbX + 8, midTop, kCapScrollW - 16, midH, color::DIM);
+    if (g_capCount > rowsN) {
+        int thumbH = (rowsN * midH) / g_capCount;
+        if (thumbH < 8) thumbH = 8;
+        int thumbMax = midH - thumbH;
+        int thumbY   = midTop + (g_capScroll * thumbMax) / (g_capCount - rowsN);
+        tft.fillRect(sbX + 10, thumbY, kCapScrollW - 20, thumbH, color::OK_GREEN);
+    }
+}
+
+static bool trigCapsTouch(int tx, int ty) {
+    const int sbX = 320 - kTrigMargin - kCapScrollW;
+    if (tx >= sbX && tx < sbX + kCapScrollW) {
+        int rowsN = capRowsVisible();
+        int maxScroll = g_capCount - rowsN; if (maxScroll < 0) maxScroll = 0;
+        if (ty >= kCapListTop && ty < kCapListTop + kCapScrollW) {
+            // up = older (newest-first list) -> scroll up = index +1? no: up moves toward NEWEST (idx 0)
+            g_capScroll--;
+            if (g_capScroll < 0) g_capScroll = 0;
+            return true;
+        }
+        if (ty >= kCapListBot - kCapScrollW && ty < kCapListBot) {
+            g_capScroll++;
+            if (g_capScroll > maxScroll) g_capScroll = maxScroll;
+            return true;
+        }
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+// Dispatcher.
+// -----------------------------------------------------------------------------
+static void drawTriggerScreen() {
+    tft.fillScreen(color::BG);
+    drawCornerHome();
+    drawTrigTabBar();
+    switch (g_trigTab) {
+        case TrigTab::CFG:  drawTrigCfgTab();  break;
+        case TrigTab::REC:  drawTrigRecTab();  break;
+        case TrigTab::CAPS: drawTrigCapsTab(); break;
+    }
+}
+
+static bool triggerTouch(int tx, int ty) {
+    TrigTab which;
+    if (inTrigTabBar(tx, ty, which)) {
+        if (which != g_trigTab) {
+            g_trigTab   = which;
+            g_capScroll = 0;        // reset scroll when entering CAPS
+            return true;
+        }
+        return false;
+    }
+    switch (g_trigTab) {
+        case TrigTab::CFG:  return trigCfgTouch(tx, ty);
+        case TrigTab::REC:  return trigRecTouch(tx, ty);
+        case TrigTab::CAPS: return trigCapsTouch(tx, ty);
+    }
+    return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -2245,6 +3542,12 @@ constexpr int kTxTuneHopY     = 44,  kTxTuneHopH    = 24;
 constexpr int kTxTuneChTop    = 74;        // channel grid y
 constexpr int kTxTuneChGapY   = 4;
 constexpr int kTxTuneChRowH   = 22;        // 2 rows → chTop..chTop+2*22+gap
+// BT direct-channel selector (replaces HOP+grid when in BT modes)
+constexpr int kTxBtFreqY      = 44, kTxBtFreqH   = 26;
+constexpr int kTxBtSliderY    = 76, kTxBtSliderH = 44;
+constexpr int kTxBtBtnW       = 40;
+constexpr int kTxBtMinusX     = kTxMargin;
+constexpr int kTxBtPlusX      = 320 - kTxMargin - kTxBtBtnW;
 constexpr int kTxTuneDurY2    = 128, kTxTuneDurH2   = 22;
 constexpr int kTxTunePaceY2   = 158, kTxTunePaceH2  = 22;
 constexpr int kTxTuneDwellY   = 188, kTxTuneDwellH  = 22;
@@ -2269,35 +3572,69 @@ static void txChTileRect(int ch, int& x, int& y, int& w, int& h) {
 }
 
 static void drawTxTuneTab() {
-    // --- HOP preset button (full-width). Tap to cycle through presets. ---
-    const int hopX = kTxMargin, hopW = 320 - 2 * kTxMargin;
-    char hopLbl[48];
-    const char* base = kHopPresetLbl[g_cwHopPreset];
-    if (g_cwHopPreset == HOP_CUSTOM) {
-        int n = 0;
-        for (int b = 0; b < 13; b++) if (g_cwHopMask & (1u << b)) n++;
-        snprintf(hopLbl, sizeof(hopLbl), "%s  (%d ch)", base, n);
+    // ---- BT direct-tune path: when in BT modes, replace HOP+grid with
+    // ---- a 1-MHz slider (BT ch 0..78 = 2402..2480 MHz).
+    const bool btMode = g_toneSel && (g_cwMode == 3 || g_cwMode == 4);
+    if (btMode) {
+        // Freq readout -- centered.
+        uint8_t  bc  = g_btChan;
+        uint16_t mhz = 2402 + bc;
+        char fbuf[32];
+        snprintf(fbuf, sizeof(fbuf), "BT %u   %u MHz", (unsigned)bc, (unsigned)mhz);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(color::OK_GREEN, color::BG);
+        tft.drawString(fbuf, 320 / 2, kTxBtFreqY + kTxBtFreqH / 2, 4);
+        // Slider row: minus / bar / plus
+        drawGlowButton(kTxBtMinusX, kTxBtSliderY, kTxBtBtnW, kTxBtSliderH, "-", true, 4);
+        drawGlowButton(kTxBtPlusX,  kTxBtSliderY, kTxBtBtnW, kTxBtSliderH, "+", true, 4);
+        const int barX = kTxBtMinusX + kTxBtBtnW + 8;
+        const int barR = kTxBtPlusX - 8;
+        const int barW = barR - barX;
+        const int barY = kTxBtSliderY + 10;
+        const int barH = kTxBtSliderH - 20;
+        if (barW > 10) {
+            tft.drawRect(barX, barY, barW, barH, color::MID);
+            uint32_t rel    = bc;                              // 0..78
+            int      filled = (int)((rel * (barW - 2)) / 78);
+            if (filled > 0) {
+                tft.fillRect(barX + 1, barY + 1, filled, barH - 2, color::OK_GREEN);
+            }
+            // Thumb marker
+            int thumbX = barX + 1 + filled;
+            tft.fillRect(thumbX - 2, barY - 3, 5, barH + 6, color::OK_GREEN);
+        }
+        // fall through to chip rows below (Mode/PA/Pattern/Dwell)
     } else {
-        snprintf(hopLbl, sizeof(hopLbl), "%s", base);
-    }
-    drawGlowButton(hopX, kTxTuneHopY, hopW, kTxTuneHopH,
-                   hopLbl, g_cwHopPreset != HOP_OFF, 2);
+        // --- HOP preset button (full-width). Tap to cycle through presets. ---
+        const int hopX = kTxMargin, hopW = 320 - 2 * kTxMargin;
+        char hopLbl[48];
+        const char* base = kHopPresetLbl[g_cwHopPreset];
+        if (g_cwHopPreset == HOP_CUSTOM) {
+            int n = 0;
+            for (int b = 0; b < 13; b++) if (g_cwHopMask & (1u << b)) n++;
+            snprintf(hopLbl, sizeof(hopLbl), "%s  (%d ch)", base, n);
+        } else {
+            snprintf(hopLbl, sizeof(hopLbl), "%s", base);
+        }
+        drawGlowButton(hopX, kTxTuneHopY, hopW, kTxTuneHopH,
+                       hopLbl, g_cwHopPreset != HOP_OFF, 2);
 
-    // --- Channel grid: single-pick when HOP off, multi-pick when HOP on. ---
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(color::DIM, color::BG);
-    const char* chHdr =
-        g_cwHopPreset == HOP_OFF    ? "Ch" :
-        g_cwHopPreset == HOP_CUSTOM ? "Ch (tap to add/remove)" :
-                                       "Ch (preset locked)";
-    tft.drawString(chHdr, kTxMargin, kTxTuneChTop - 8, 1);
-    for (int ch = 1; ch <= 13; ch++) {
-        int x, y, w, h; txChTileRect(ch, x, y, w, h);
-        char lbl[6]; snprintf(lbl, sizeof(lbl), "%d", ch);
-        bool hop = (g_cwHopPreset != HOP_OFF);
-        bool on  = hop ? chanInMask((uint8_t)ch)
-                       : (g_txChannel == ch);
-        drawGlowButton(x, y, w, h, lbl, on, 2);
+        // --- Channel grid: single-pick when HOP off, multi-pick when HOP on. ---
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(color::DIM, color::BG);
+        const char* chHdr =
+            g_cwHopPreset == HOP_OFF    ? "Ch" :
+            g_cwHopPreset == HOP_CUSTOM ? "Ch (tap to add/remove)" :
+                                           "Ch (preset locked)";
+        tft.drawString(chHdr, kTxMargin, kTxTuneChTop - 8, 1);
+        for (int ch = 1; ch <= 13; ch++) {
+            int x, y, w, h; txChTileRect(ch, x, y, w, h);
+            char lbl[6]; snprintf(lbl, sizeof(lbl), "%d", ch);
+            bool hop = (g_cwHopPreset != HOP_OFF);
+            bool on  = hop ? chanInMask((uint8_t)ch)
+                           : (g_txChannel == ch);
+            drawGlowButton(x, y, w, h, lbl, on, 2);
+        }
     }
 
     // Shared chip row renderer
@@ -2386,26 +3723,58 @@ static void drawTxTuneTab() {
 }
 
 static bool txTuneTouch(int tx, int ty) {
-    // HOP preset button: tap cycles through OFF / Custom / 1,6,11 / All / BLE / Video.
-    if (ty >= kTxTuneHopY && ty < kTxTuneHopY + kTxTuneHopH
-        && tx >= kTxMargin && tx < 320 - kTxMargin) {
-        uint8_t next = (uint8_t)((g_cwHopPreset + 1) % HOP_PRESET_COUNT);
-        applyHopPreset(next);
-        return true;
-    }
-    // Channel grid: single-pick when HOP off, mask toggle in Custom mode.
-    // Preset modes (1/6/11, All, BLE, Video) ignore grid taps so you don't
-    // accidentally clobber a preset by touching a tile.
-    for (int ch = 1; ch <= 13; ch++) {
-        int x, y, w, h; txChTileRect(ch, x, y, w, h);
-        if (tx >= x && tx < x + w && ty >= y && ty < y + h) {
-            if (g_cwHopPreset == HOP_OFF) {
-                g_txChannel = (uint8_t)ch;
-            } else if (g_cwHopPreset == HOP_CUSTOM) {
-                g_cwHopMask ^= (1u << (ch - 1));
-                if (g_cwHopMask == 0) g_cwHopMask = (1u << (ch - 1));
+    const bool btMode = g_toneSel && (g_cwMode == 3 || g_cwMode == 4);
+    if (btMode) {
+        // BT slider minus/plus/bar occupies the HOP+grid real estate.
+        if (ty >= kTxBtSliderY && ty < kTxBtSliderY + kTxBtSliderH) {
+            if (tx >= kTxBtMinusX && tx < kTxBtMinusX + kTxBtBtnW) {
+                int next = (int)g_btChan - 1;
+                if (next < 0) next = 0;
+                g_btChan = (uint8_t)next;
+                return true;
             }
+            if (tx >= kTxBtPlusX && tx < kTxBtPlusX + kTxBtBtnW) {
+                int next = (int)g_btChan + 1;
+                if (next > 78) next = 78;
+                g_btChan = (uint8_t)next;
+                return true;
+            }
+            const int barX = kTxBtMinusX + kTxBtBtnW + 8;
+            const int barR = kTxBtPlusX - 8;
+            const int barW = barR - barX;
+            if (tx >= barX && tx < barR && barW > 10) {
+                int rel = tx - barX;
+                int bc  = (rel * 78) / (barW - 2);
+                if (bc < 0) bc = 0; else if (bc > 78) bc = 78;
+                g_btChan = (uint8_t)bc;
+                return true;
+            }
+        }
+        // Also allow taps on the big freq readout to do nothing (eat them, no fallthrough).
+        if (ty >= kTxBtFreqY && ty < kTxBtFreqY + kTxBtFreqH) return false;
+        // skip HOP + grid hitboxes entirely in BT mode
+    } else {
+        // HOP preset button: tap cycles through OFF / Custom / 1,6,11 / All / BLE / Video.
+        if (ty >= kTxTuneHopY && ty < kTxTuneHopY + kTxTuneHopH
+            && tx >= kTxMargin && tx < 320 - kTxMargin) {
+            uint8_t next = (uint8_t)((g_cwHopPreset + 1) % HOP_PRESET_COUNT);
+            applyHopPreset(next);
             return true;
+        }
+        // Channel grid: single-pick when HOP off, mask toggle in Custom mode.
+        // Preset modes (1/6/11, All, BLE, Video) ignore grid taps so you don't
+        // accidentally clobber a preset by touching a tile.
+        for (int ch = 1; ch <= 13; ch++) {
+            int x, y, w, h; txChTileRect(ch, x, y, w, h);
+            if (tx >= x && tx < x + w && ty >= y && ty < y + h) {
+                if (g_cwHopPreset == HOP_OFF) {
+                    g_txChannel = (uint8_t)ch;
+                } else if (g_cwHopPreset == HOP_CUSTOM) {
+                    g_cwHopMask ^= (1u << (ch - 1));
+                    if (g_cwHopMask == 0) g_cwHopMask = (1u << (ch - 1));
+                }
+                return true;
+            }
         }
     }
     // Chip-row hitboxes (share same geometry as drawChipRow)
@@ -2826,15 +4195,48 @@ static bool handleTouchOnce() {
                 if (g_screen == Screen::HOME) persistBootDest(0);
                 return true;
             }
+            // Leaving LIVE entirely: restore tune if HOP had taken over.
+            if (g_screen == Screen::LIVE && g_liveTab == LiveTab::HOP) hopExitTab();
             g_screen = Screen::HOME;
             persistBootDest(0);
             return true;
         }
         if (g_screen == Screen::LIVE && inLiveTune(x, y)) {
+            // Pop out to Tune: let user adjust, but keep HOP's hunt tune
+            // in place so re-entering LIVE shows consistent state.
             g_prevScreen = Screen::LIVE;
             g_tuneTab    = TuneTab::TUNE;
             g_screen     = Screen::TUNE;
             return true;
+        }
+        // LIVE HOP toggle: flip between SPEC and HOP sub-tabs. Save or
+        // restore the user's tune state at the boundary so HOP's hunt
+        // cycle doesn't leave their SPEC tune mangled.
+        if (g_screen == Screen::LIVE && inLiveHopChip(x, y)) {
+            if (g_liveTab == LiveTab::SPEC) {
+                g_liveTab = LiveTab::HOP;
+                hopEnterTab();
+            } else {
+                hopExitTab();
+                g_liveTab = LiveTab::SPEC;
+            }
+            return true;
+        }
+        // HOP mode chip row: switch between hunt modes. All seven chips
+        // tap: ADV sub-modes retune, placeholders (CONN/WIFI/ZB) switch the
+        // mode indicator but freeze the current tune (nothing to retune to
+        // yet) and the classifier reports "not yet" so you can see the chip
+        // is responsive.
+        if (g_screen == Screen::LIVE && g_liveTab == LiveTab::HOP) {
+            int chipIdx = -1;
+            if (inHopModeChip(x, y, chipIdx) && chipIdx >= 0 && chipIdx < 7) {
+                HopMode m = (HopMode)chipIdx;
+                if (m != g_hopMode) {
+                    hopApplyMode(m);
+                    return true;    // triggers full redraw
+                }
+                return false;
+            }
         }
         // LIVE shortcut: tap the AGC pill in the bottom pill strip to open
         // Tune with GAIN tab pre-selected.
@@ -2962,8 +4364,20 @@ static void uiTask(void*) {
         if (xQueueReceive(g_fftQueue, &frame, 0) == pdTRUE) {
             g_latestFrame = frame;
             g_haveFrame = true;
+            // Hop Trail eats every frame regardless of which screen is up, so
+            // the ring stays warm when the user flips to the HOP tab.
+            hopLog(frame);
             if (g_screen == Screen::LIVE) {
-                drawLiveFrame(0);
+                if (g_liveTab == LiveTab::SPEC) {
+                    drawLiveFrame(0);
+                } else {
+                    // HOP tab: incremental dirty-rect refresh at frame rate.
+                    // Each helper only touches cells that actually changed,
+                    // so this stays below the flicker threshold. Cycle tick
+                    // handles the ADV_CYCLE retune cadence.
+                    hopCycleTick();
+                    drawLiveHopTabTick();
+                }
             }
         }
 
@@ -3014,6 +4428,11 @@ void setup() {
     bool hasCal = loadTouchCalibration();
     Serial.printf("[sh] touch cal %s\n", hasCal ? "LOADED" : "MISSING -- calibrating");
     if (!hasCal) runTouchCalibration();
+
+    // --- SD card (optional). If present, load recent captures into the RAM ring
+    // so CAPS tab shows prior-session history across reboots.
+    tryMountSd();
+    if (g_sdMounted) sdLoadLastEvents(kCapCapacity);
 
     // --- Queue + tasks ---
     g_fftQueue = xQueueCreate(1, sizeof(FftFrame));
@@ -3244,6 +4663,261 @@ static void cliExec(char* line) {
     // txdc_cal removed -- not exported in Arduino libphy (only ram_txdc_cal_v70)
     if (!strcmp(tok, "cdig_gain"))       { int c=arg(11); set_chan_dig_gain_fn(c); Serial.printf("ok cdig_gain(%d)\n",c); return; }
     if (!strcmp(tok, "reboot"))          { Serial.println("ok reboot"); delay(50); ESP.restart(); return; }
+    if (!strcmp(tok, "hopthr")) {
+        int v = arg(30);
+        if (v < 0)   v = 0;
+        if (v > 255) v = 255;
+        g_hopMinLevel = (uint8_t)v;
+        Serial.printf("ok hopthr=%u\n", (unsigned)g_hopMinLevel);
+        return;
+    }
+    if (!strcmp(tok, "hopdelta")) {
+        int v = arg(18);
+        if (v < 0)   v = 0;
+        if (v > 255) v = 255;
+        g_hopDelta = (uint8_t)v;
+        Serial.printf("ok hopdelta=%u (above per-bin floor)\n", (unsigned)g_hopDelta);
+        return;
+    }
+    if (!strcmp(tok, "hopfloor")) {
+        // Print a condensed view of the per-bin running noise floor so we
+        // can see how it's tracking (e.g. WiFi carrier raises floor
+        // locally; quiet region stays at baseline).
+        int N = g_latestFrame.fftN ? g_latestFrame.fftN : 128;
+        Serial.printf("[hop] floor (N=%d, Q4 scaled):\n", N);
+        for (int i = 0; i < N; i += 4) {
+            if ((i & 31) == 0) Serial.printf(" bin%3d:", i);
+            Serial.printf(" %3u", (unsigned)(g_binFloor[i] >> 4));
+            if ((i & 31) == 28) Serial.println();
+        }
+        Serial.println("\nok");
+        return;
+    }
+    if (!strcmp(tok, "hoprun")) {
+        int secs = arg(10);
+        if (secs < 2)  secs = 2;
+        if (secs > 60) secs = 60;
+        Serial.printf("[hop] hoprun start -- %d s, hopthr=%u hopdelta=%u"
+                      " tune ch=%u span=%u\n",
+                      secs, (unsigned)g_hopMinLevel, (unsigned)g_hopDelta,
+                      (unsigned)g_wifiCh, (unsigned)g_wantSpan);
+        memset((void*)&g_hoprun, 0, sizeof(g_hoprun));
+        g_hoprunActive = true;
+        uint32_t t0 = millis();
+        uint32_t tickMs = t0;
+        while ((millis() - t0) < (uint32_t)(secs * 1000)) {
+            delay(50);  // yields, cliPoll stays responsive
+            uint32_t now = millis();
+            if ((now - tickMs) >= 2000) {
+                tickMs = now;
+                Serial.printf("[hop]  t=%2us total=%u adv:%u/%u/%u conn=%u\n",
+                              (unsigned)((now - t0) / 1000),
+                              (unsigned)g_hoprun.total,
+                              (unsigned)g_hoprun.adv0, (unsigned)g_hoprun.adv24,
+                              (unsigned)g_hoprun.adv78, (unsigned)g_hoprun.connCnt);
+            }
+        }
+        g_hoprunActive = false;
+        // Summary: totals + rates + top channel + conn interval + ch distribution
+        int topCh = 0; uint32_t topCnt = 0; int distinct = 0;
+        for (int b = 0; b < 79; b++) {
+            if (g_hoprun.perCh[b] > 0) distinct++;
+            if (g_hoprun.perCh[b] > topCnt) { topCnt = g_hoprun.perCh[b]; topCh = b; }
+        }
+        uint32_t avgDt = g_hoprun.connCnt ? (g_hoprun.connDtSum / g_hoprun.connCnt) : 0;
+        Serial.printf("[hop] RESULT %ds: total=%u rate=%u/s\n",
+                      secs, (unsigned)g_hoprun.total,
+                      (unsigned)(g_hoprun.total / secs));
+        Serial.printf("[hop]   adv: 0=%u (2402)  24=%u (2426)  78=%u (2480)\n",
+                      (unsigned)g_hoprun.adv0, (unsigned)g_hoprun.adv24,
+                      (unsigned)g_hoprun.adv78);
+        Serial.printf("[hop]   conn: cnt=%u  avgDt=%ums  fastBt=%u\n",
+                      (unsigned)g_hoprun.connCnt, (unsigned)avgDt,
+                      (unsigned)g_hoprun.fastHop);
+        Serial.printf("[hop]   distinctChs=%d  topCh=%d (hits=%u, %u MHz)\n",
+                      distinct, topCh, (unsigned)topCnt, 2402 + topCh);
+        Serial.print("[hop]   per-ch:");
+        for (int b = 0; b < 79; b++) {
+            if (g_hoprun.perCh[b] > 0) Serial.printf(" %d=%u", b, (unsigned)g_hoprun.perCh[b]);
+        }
+        Serial.println();
+        Serial.println("ok");
+        return;
+    }
+    if (!strcmp(tok, "hopclear")) {
+        g_hopCount = 0;
+        g_hopHead  = 0;
+        memset(g_scatterRing, 0, sizeof(g_scatterRing));
+        g_binFloorPrimed = false;
+        Serial.println("ok hopclear (ring + scatter + floor)");
+        return;
+    }
+    if (!strcmp(tok, "specdump")) {
+        // Dump current FFT frame as one CSV line for off-device comparison
+        // against hackrf_sweep. Format:
+        //   spec,<ts_ms>,<wifiCh>,<spanMode>,<fftN>,<bin0>,<bin1>,...,<binN-1>
+        int N = g_latestFrame.fftN ? g_latestFrame.fftN : 128;
+        uint32_t ts = millis();
+        Serial.printf("spec,%lu,%u,%u,%d",
+                      (unsigned long)ts, (unsigned)g_wifiCh,
+                      (unsigned)g_wantSpan, N);
+        for (int i = 0; i < N; i++) {
+            Serial.printf(",%u", (unsigned)g_latestFrame.bins[i]);
+        }
+        Serial.println();
+        Serial.println("ok");
+        return;
+    }
+    if (!strcmp(tok, "specstream")) {
+        // Stream specdump-format lines for N seconds, one per unique frame.
+        int secs = arg(10);
+        if (secs < 1)  secs = 1;
+        if (secs > 60) secs = 60;
+        Serial.printf("# specstream %ds  ch=%u span=%u\n",
+                      secs, (unsigned)g_wifiCh, (unsigned)g_wantSpan);
+        uint32_t t0 = millis();
+        uint32_t lastSeq = 0;
+        while ((millis() - t0) < (uint32_t)(secs * 1000)) {
+            uint32_t seq = g_latestFrame.seq;
+            if (seq != lastSeq) {
+                lastSeq = seq;
+                int N = g_latestFrame.fftN ? g_latestFrame.fftN : 128;
+                uint32_t ts = millis();
+                Serial.printf("spec,%lu,%u,%u,%d",
+                              (unsigned long)ts, (unsigned)g_wifiCh,
+                              (unsigned)g_wantSpan, N);
+                for (int i = 0; i < N; i++) {
+                    Serial.printf(",%u", (unsigned)g_latestFrame.bins[i]);
+                }
+                Serial.println();
+            }
+            delay(5);
+        }
+        Serial.println("ok");
+        return;
+    }
+    if (!strcmp(tok, "hopadv")) {
+        // Dedicated-tune experiment: cycle (or lock to) BLE adv channels at
+        // 40 MHz span. The target bin at each tune:
+        //   BLE 37 (2402 MHz): ch 1  S40, bin ~32
+        //   BLE 38 (2426 MHz): ch 4  S40, bin ~61
+        //   BLE 39 (2480 MHz): ch 13 S40, bin ~90
+        // Usage: hopadv [mode=0|37|38|39] [secs=10]
+        //   mode 0 = cycle all three; 37/38/39 = lock to that one.
+        int mode = arg(0);
+        int secs = arg(10);
+        if (secs < 2)  secs = 2;
+        if (secs > 60) secs = 60;
+        struct AdvCfg { uint8_t wifiCh; uint8_t span; int bleCh; int targetMhz; };
+        static const AdvCfg cfg[3] = {
+            { 1,  (uint8_t)SpanMode::S40, 37, 2402 },
+            { 4,  (uint8_t)SpanMode::S40, 38, 2426 },
+            { 13, (uint8_t)SpanMode::S40, 39, 2480 },
+        };
+        int cyc[3]; int cycN = 0;
+        if      (mode == 37) { cyc[0] = 0; cycN = 1; }
+        else if (mode == 38) { cyc[0] = 1; cycN = 1; }
+        else if (mode == 39) { cyc[0] = 2; cycN = 1; }
+        else                 { cyc[0] = 0; cyc[1] = 1; cyc[2] = 2; cycN = 3; }
+        uint8_t saveCh = g_wifiCh, saveSpan = g_wantSpan;
+        if (cycN == 1) {
+            Serial.printf("[hop] hopadv %ds LOCK to BLE ch %d (%d MHz, WiFi ch %u S40)\n",
+                          secs, cfg[cyc[0]].bleCh, cfg[cyc[0]].targetMhz,
+                          (unsigned)cfg[cyc[0]].wifiCh);
+        } else {
+            Serial.printf("[hop] hopadv %ds CYCLE BLE 37/38/39 @ ~300ms each\n", secs);
+        }
+        memset((void*)&g_hoprun, 0, sizeof(g_hoprun));
+        g_hoprunActive = true;
+        g_binFloorPrimed = false;    // floor re-primes after each retune
+        uint32_t t0 = millis();
+        uint32_t tickMs = t0;
+        int cIdx = 0;
+        while ((millis() - t0) < (uint32_t)(secs * 1000)) {
+            g_wifiCh    = cfg[cyc[cIdx]].wifiCh;
+            g_wantSpan  = cfg[cyc[cIdx]].span;
+            delay(300);   // ~80 ms retune settle + ~220 ms dwell
+            cIdx = (cIdx + 1) % cycN;
+            uint32_t now = millis();
+            if ((now - tickMs) >= 2000) {
+                tickMs = now;
+                Serial.printf("[hop]  t=%2us adv:%u/%u/%u total=%u\n",
+                              (unsigned)((now - t0) / 1000),
+                              (unsigned)g_hoprun.adv0, (unsigned)g_hoprun.adv24,
+                              (unsigned)g_hoprun.adv78, (unsigned)g_hoprun.total);
+            }
+        }
+        g_hoprunActive = false;
+        g_wifiCh   = saveCh;
+        g_wantSpan = saveSpan;
+        Serial.printf("[hop] RESULT hopadv %ds: total=%u rate=%u/s\n",
+                      secs, (unsigned)g_hoprun.total,
+                      (unsigned)(g_hoprun.total / secs));
+        Serial.printf("[hop]   adv: 0=%u (2402)  24=%u (2426)  78=%u (2480)\n",
+                      (unsigned)g_hoprun.adv0, (unsigned)g_hoprun.adv24,
+                      (unsigned)g_hoprun.adv78);
+        Serial.println("ok");
+        return;
+    }
+    if (!strcmp(tok, "hopdump")) {
+        // Dump the hop ring (newest first) + classifier stats, so we can
+        // tell what the HOP tab is actually seeing without eyeballing it.
+        HopClass cls; classifyHops(cls);
+        Serial.printf("[hop] ring=%d/%d  tune ch=%u span=%u  hopthr=%u  hopdelta=%u\n",
+                      g_hopCount, kHopRingSize,
+                      (unsigned)g_wifiCh, (unsigned)g_wantSpan,
+                      (unsigned)g_hopMinLevel, (unsigned)g_hopDelta);
+        int vLo, vHi; hopVisibleBtRange(vLo, vHi);
+        Serial.printf("[hop] visible BT ch %d..%d (= %d..%d MHz)\n",
+                      vLo, vHi, 2402 + vLo, 2402 + vHi);
+        Serial.printf("[hop] totalRecent(2s)=%u  rate=%d/s  adv:0=%u 24=%u 78=%u"
+                      "  wifi6=%u wifi11=%u  conn=%u(~%lums)  fastBt=%u\n",
+                      (unsigned)cls.totalRecent, cls.totalRecent / 2,
+                      (unsigned)cls.adv0, (unsigned)cls.adv24, (unsigned)cls.adv78,
+                      (unsigned)cls.wifiBand6, (unsigned)cls.wifiBand11,
+                      (unsigned)cls.connCount, (unsigned long)cls.connIntvEstMs,
+                      (unsigned)cls.fastHop);
+        Serial.printf("[hop] distinctChs=%u  topCh=%u (hits=%u, %u MHz)"
+                      "  nonTopCount=%u\n",
+                      (unsigned)cls.distinctChs, (unsigned)cls.topCh,
+                      (unsigned)cls.topChCount, 2402 + (unsigned)cls.topCh,
+                      (unsigned)cls.nonTopCount);
+        // Per-BT-ch activity, printed only for non-zero chs to keep it short.
+        Serial.print("[hop] per-ch 2s: ");
+        bool any = false;
+        for (int bt = 0; bt < 79; bt++) {
+            if (cls.usagePerBtCh[bt] == 0) continue;
+            Serial.printf("%d=%u ", bt, (unsigned)cls.usagePerBtCh[bt]);
+            any = true;
+        }
+        if (!any) Serial.print("(none)");
+        Serial.println();
+        // Last 20 events: ts delta from now, bin, level, computed BT ch.
+        // Snapshot head once -- uiTask advances g_hopHead between
+        // iterations otherwise and we'd re-read already-printed slots.
+        uint32_t now = millis();
+        int snapHead  = g_hopHead;
+        int snapCount = g_hopCount;
+        int showN = (snapCount < 20 ? snapCount : 20);
+        Serial.printf("[hop] last %d events:\n", showN);
+        for (int i = 0; i < showN; i++) {
+            int idx = (snapHead - 1 - i + kHopRingSize) % kHopRingSize;
+            const HopEvent& ev = g_hopRing[idx];
+            int bt = hopBinToBtCh(ev.binIdx, ev.wifiCh, ev.spanMode, 128);
+            if (bt < 0) {
+                Serial.printf("  age=%4lums bin=%3u lv=%3u bt=OOB\n",
+                              (unsigned long)(now - ev.tsMs),
+                              (unsigned)ev.binIdx, (unsigned)ev.level);
+            } else {
+                Serial.printf("  age=%4lums bin=%3u lv=%3u bt=%2d  (%u MHz)\n",
+                              (unsigned long)(now - ev.tsMs),
+                              (unsigned)ev.binIdx, (unsigned)ev.level,
+                              bt, 2402 + bt);
+            }
+        }
+        Serial.println("ok");
+        return;
+    }
     if (!strcmp(tok, "wifi_reinit")) {
         // Force WiFi stack teardown + re-init -- same chain that produces
         // the boot-time TX cal blip.
@@ -3406,12 +5080,11 @@ void cwTask(void*) {
                 uint8_t ch     = g_cwReqCh;
                 uint8_t bo     = g_cwReqBo;
                 // Modes 3 (BT) and 4 (BT_SWEEP) both enter via RADIO_TX_BT_CW
-                // -- mode 4 just drives rapid bt_chan_change retunes from
-                // the main loop (handled below). Mode 2 (SWEEP) same for CW.
+                // -- for BT modes we override `ch` with the direct BT channel.
                 uint8_t target;
                 if      (g_cwMode == 1) target = RADIO_TX_PKT20;
-                else if (g_cwMode == 3) target = RADIO_TX_BT_CW;
-                else if (g_cwMode == 4) target = RADIO_TX_BT_CW;
+                else if (g_cwMode == 3) { target = RADIO_TX_BT_CW; ch = g_btChan; }
+                else if (g_cwMode == 4) { target = RADIO_TX_BT_CW; ch = g_btChan; }
                 else                    target = RADIO_TX_CW;
                 g_cwActive     = true;
                 vTaskDelay(pdMS_TO_TICKS(30));
@@ -3463,7 +5136,7 @@ void cwTask(void*) {
         // around the WiFi ch center. Pattern 2 (BLE_ADV) hits 0/24/78 only.
         if (g_cwActive && g_cwMode == 4 && !g_cwHop) {
             int pattern  = g_btSweepPat;
-            int centerBt = wifiChToBtCh((int)g_cwReqCh);
+            int centerBt = g_btChan;    // direct BT channel from UI
             int lo = 0, hi = 78;
             if (pattern == 1) {
                 int sp = g_cwSweepSpan;    // span in "channels" -- for BT = MHz
@@ -3528,6 +5201,16 @@ void cwTask(void*) {
             g_cwHits++;
             vTaskDelay(1);
             continue;
+        }
+        // BT CW live retune: slider moves while CW is on -> bt_chan_change.
+        // Carrier stays up, PLL hops to the new 1 MHz BT channel.
+        if (g_cwActive && g_cwMode == 3) {
+            static uint8_t lastSentBt = 0xFF;
+            uint8_t cur = g_btChan;
+            if (cur != lastSentBt) {
+                lastSentBt = cur;
+                bt_chan_change(cur);
+            }
         }
         // Idle hit bump every ~200ms when active-but-not-hopping, so the
         // UI readout proves the task is scheduled.
