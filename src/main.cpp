@@ -185,23 +185,47 @@ static QueueHandle_t g_fftQueue = nullptr;
 // ----------------------------------------------------------------------------
 TFT_eSPI tft;
 
+#ifdef SIGNALHOUND_AWOK
+// AWOK Marauder 6.1 2.4": touch shares the display's VSPI bus. TFT_eSPI
+// handles the SPI arbitration internally via tft.getTouchRaw(). Our pin
+// constants below are placeholders (unused on this port).
+constexpr int kTouchCs   = 21;      // TOUCH_CS pad, same bus as LCD
+constexpr int kTouchClk  = 18;
+constexpr int kTouchMosi = 23;
+constexpr int kTouchMiso = 19;
+constexpr int kTouchIrq  = -1;      // no IRQ wired on AWOK
+#else
+// CYD 2.8": dedicated-VSPI XPT2046 on 25/32/39/33 (no shared with LCD).
 constexpr int kTouchCs   = 33;
 constexpr int kTouchClk  = 25;
 constexpr int kTouchMosi = 32;
 constexpr int kTouchMiso = 39;
 constexpr int kTouchIrq  = 36;
 SPIClass touchSpi(VSPI);
+#endif
 
 // SD lives on the same VSPI peripheral as touch, but on the CYD's physical
 // SD-slot pads (18/19/23/5). The pin mux is re-pointed per operation:
 // touch runs with VSPI mux = touch pads; SD write briefly re-muxes to SD
 // pads, then restores. All SD + touch access is from the UI task on Core 1
 // so no cross-task race.
+#ifndef SIGNALHOUND_AWOK
+// CYD 2.8": SD on dedicated VSPI shared with touch via pin remux.
 constexpr int kSdCs   = 5;
 constexpr int kSdSck  = 18;
 constexpr int kSdMiso = 19;
 constexpr int kSdMosi = 23;
 SPIClass sdSpi(VSPI);
+#else
+// AWOK 2.4": SD shares the same VSPI as the LCD and touch (CS=14). The
+// current mux-switching mount logic was written for the CYD 2.8"'s split
+// bus; shimming it to AWOK needs TFT_eSPI-coordinated transactions.
+// Deferred for later -- SD stays disabled on AWOK until that work lands.
+constexpr int kSdCs   = 14;
+constexpr int kSdSck  = 18;
+constexpr int kSdMiso = 19;
+constexpr int kSdMosi = 23;
+#endif
 // Idle noise on this specific CYD panel reads rz 300-510 with no finger.
 // Threshold must be comfortably above that; real resistive touch typically
 // clears 1000-3500.
@@ -843,6 +867,14 @@ static void vspiToSd()    { vspiMux(kSdSck,    kSdMiso,    kSdMosi); }
 static void vspiToTouch() { vspiMux(kTouchClk, kTouchMiso, kTouchMosi); }
 
 static void tryMountSd() {
+#ifdef SIGNALHOUND_AWOK
+    // AWOK's SD is on the same shared VSPI as the LCD; cannot drive without
+    // coordinating through TFT_eSPI. Skip the mount; capture history lives
+    // in RAM only on this port until that work lands.
+    Serial.println("[sd] skipped on AWOK (shared-SPI arbitration pending)");
+    return;
+}
+#else
     // SPIClass::begin() will no-op if we try to re-point touch's instance,
     // so skip SPIClass and drive mux via hal. Attach SD pins first so
     // SD.begin's internal transfers land on the right pins; our later
@@ -930,6 +962,13 @@ static void sdLoadLastEvents(int n) {
                   want, (unsigned)nEvents);
     vspiToTouch();
 }
+#endif  // SIGNALHOUND_AWOK else-branch (SD stack)
+
+#ifdef SIGNALHOUND_AWOK
+// AWOK stubs so call sites link cleanly; see tryMountSd() above.
+static void sdAppendEvent(const CaptureEvent*) {}
+static void sdLoadLastEvents(int)              {}
+#endif
 
 // Hop Trail helpers --------------------------------------------------------
 // Map an FFT bin + tune state back to a BT channel (0..78 = 2402..2480 MHz).
@@ -1125,13 +1164,35 @@ constexpr int kNumPresets = sizeof(kPresets) / sizeof(kPresets[0]);
 // Touch (direct VSPI, mirrors cyd-bulb-controller/main.cpp:230-261)
 // ----------------------------------------------------------------------------
 void touchInit() {
+#ifdef SIGNALHOUND_AWOK
+    // TFT_eSPI handles the shared-SPI touch init implicitly on first
+    // getTouchRaw() call. Nothing to do here.
+#else
     pinMode(kTouchIrq, INPUT);
     pinMode(kTouchCs, OUTPUT);
     digitalWrite(kTouchCs, HIGH);
     touchSpi.begin(kTouchClk, kTouchMiso, kTouchMosi, kTouchCs);
+#endif
 }
 
 bool touchReadRaw(uint16_t& rx, uint16_t& ry, uint16_t& rz) {
+#ifdef SIGNALHOUND_AWOK
+    // Shared SPI: ask TFT_eSPI for the current raw touch sample. It handles
+    // CS toggle + XPT2046 command set + CS release so the display's own
+    // transactions aren't disturbed. No separate z1/z2 pressure read on
+    // this path, so we synthesize rz from the "pressed" flag.
+    uint16_t x = 0, y = 0;
+    uint8_t pressed = tft.getTouchRaw(&x, &y);
+    rx = x; ry = y;
+    rz = pressed ? (0xFFF - 100) : (0xFFF - 1);
+    static unsigned long lastZprint = 0;
+    unsigned long now = millis();
+    if (now - lastZprint > 300) {
+        Serial.printf("[tc] awok x=%u y=%u pressed=%u\n", rx, ry, pressed);
+        lastZprint = now;
+    }
+    return pressed != 0;
+#else
     touchSpi.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
     digitalWrite(kTouchCs, LOW);
     touchSpi.transfer(0xB0);
@@ -1145,9 +1206,6 @@ bool touchReadRaw(uint16_t& rx, uint16_t& ry, uint16_t& rz) {
     rx = x;
     ry = y;
     bool pressed = rz > kTouchPressureThreshold && rz <= 0xFFF;
-    // Diagnostic: throttled print of raw z so we can see what the panel is
-    // actually reporting. If z stays near 0xFFF when untouched, pressure
-    // sensing is working; the threshold just needs tuning.
     static unsigned long lastZprint = 0;
     unsigned long now = millis();
     if (now - lastZprint > 300) {
@@ -1155,6 +1213,7 @@ bool touchReadRaw(uint16_t& rx, uint16_t& ry, uint16_t& rz) {
         lastZprint = now;
     }
     return pressed;
+#endif
 }
 
 bool touchRead(uint16_t& rx, uint16_t& ry) {
