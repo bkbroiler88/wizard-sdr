@@ -3118,8 +3118,12 @@ static void drawTrigCfgTab() {
     drawGlowButton(x, kTrigEnableY, w, kTrigEnableH, "", true, 2);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(g_trigEnabled ? color::OK_GREEN : color::DIM, color::BG);
-    tft.drawString(g_trigEnabled ? "TRIGGER  ON" : "TRIGGER  OFF",
-                   x + w / 2, kTrigEnableY + kTrigEnableH / 2, 4);
+    tft.drawString(g_trigEnabled ? "ARMED" : "DISARMED",
+                   x + w / 2, kTrigEnableY + kTrigEnableH / 2 - 4, 4);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString(g_trigEnabled ? "capturing when peak > threshold"
+                                 : "tap to arm — fires on spectrum peaks",
+                   x + w / 2, kTrigEnableY + kTrigEnableH - 10, 1);
 
     // Threshold adjuster
     int xM10, xM1, xV, xP1, xP10, wStep, wVal, hRow;
@@ -3157,12 +3161,17 @@ static void drawTrigCfgTab() {
     tft.setTextColor(color::MID, color::BG);
     tft.drawString(status, tft.width() / 2, kTrigStatY, 2);
 
-    // Band selector row (ALL / LEFT / RIGHT)
-    const int bandRowY = 208, bandRowH = 24;
+    // Band-gate selector: label row + three chips.
+    const int bandLabelY = 194;
+    const int bandRowY   = 212, bandRowH = 24;
     const int bandLeft = kTrigMargin, bandRight = 320 - kTrigMargin;
     const int bandGap  = 6;
     const int bandW    = (bandRight - bandLeft - 2 * bandGap) / 3;
-    const char* labels[3] = { "ALL", "LEFT", "RIGHT" };
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString("band gate (which half of the span triggers)",
+                   bandLeft, bandLabelY, 1);
+    const char* labels[3] = { "FULL", "LOWER", "UPPER" };
     const TrigBand vals[3] = { TrigBand::ALL, TrigBand::LEFT, TrigBand::RIGHT };
     for (int i = 0; i < 3; i++) {
         int bx = bandLeft + i * (bandW + bandGap);
@@ -3186,9 +3195,9 @@ static bool trigCfgTouch(int tx, int ty) {
         }
         return true;
     }
-    // Band selector row
+    // Band selector row (matches drawTrigCfgTab layout)
     {
-        const int bandRowY = 208, bandRowH = 24;
+        const int bandRowY = 212, bandRowH = 24;
         const int bandLeft = kTrigMargin, bandRight = 320 - kTrigMargin;
         const int bandGap  = 6;
         const int bandW    = (bandRight - bandLeft - 2 * bandGap) / 3;
