@@ -2766,13 +2766,26 @@ static bool wifiChActive(int ch) {
 }
 
 static void drawTuneTabContent() {
-    // WIDE strip (80 MS/s full-band)
+    // WIDE strip (80 MS/s full-band) -- shows current tune state inline so
+    // the operator can read exact MHz at a glance.
     {
         int x, y, w, h; wideTileRect(x, y, w, h);
         bool active = (g_appliedSpan == SpanMode::S80);
-        drawGlowButton(x, y, w, h,
-                       active ? "WIDE  2402-2482" : "WIDE  (full band)",
-                       active, 2);
+        drawGlowButton(x, y, w, h, "", active, 2);
+        char lbl[32];
+        if (active) {
+            snprintf(lbl, sizeof(lbl), "WIDE  2402-2482 MHz");
+        } else {
+            // Compute current center freq from applied channel + span.
+            int bw = spanBwMHz(g_appliedSpan);
+            int center = 2407 + g_appliedCh * 5;
+            if (g_appliedCh == 14) center = 2484;
+            snprintf(lbl, sizeof(lbl), "ch %u  %d MHz  BW%d",
+                     (unsigned)g_appliedCh, center, bw);
+        }
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(active ? color::OK_GREEN : color::BRIGHT, color::BG);
+        tft.drawString(lbl, x + w / 2, y + h / 2, 2);
     }
 
     // Presets row -- each tile shows label + sub freq
@@ -2791,14 +2804,22 @@ static void drawTuneTabContent() {
     tft.drawFastHLine(kTuneLeft, 110, kTuneGridW, color::DIM);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(color::DIM, color::BG);
-    tft.drawString("WiFi CHANNELS", tft.width() / 2, 118, 1);
+    tft.drawString("WiFi CHANNELS  (ch 1-5 overlap 13 cm ham band)",
+                   tft.width() / 2, 118, 1);
 
-    // WiFi channel grid 1..13
-    for (int ch = 1; ch <= 13; ch++) {
+    // WiFi channel grid 1..14 (14 is Japan-only standard but legal cert_test).
+    // Ch 1-5 get an amber outline marker since they fall inside the US 2300-
+    // 2450 MHz amateur allocation.
+    for (int ch = 1; ch <= 14; ch++) {
         int x, y, w, h; tuneTileRect(ch, x, y, w, h);
         char label[8];
         snprintf(label, sizeof(label), "%d", ch);
         drawGlowButton(x, y, w, h, label, wifiChActive(ch), 4);
+        if (ch >= 1 && ch <= 5) {
+            // Subtle amber corner-tick to flag ham-usable channel.
+            tft.drawFastHLine(x + w - 8, y + 2, 6, color::WARN_AMBER);
+            tft.drawFastVLine(x + w - 2, y + 2, 6, color::WARN_AMBER);
+        }
     }
 }
 
@@ -2821,8 +2842,8 @@ static bool tuneTabTouch(int tx, int ty) {
             return true;
         }
     }
-    // WiFi grid
-    for (int ch = 1; ch <= 13; ch++) {
+    // WiFi grid 1..14 (ch 14 added for Japan-only + extended-range CW TX)
+    for (int ch = 1; ch <= 14; ch++) {
         int x, y, w, h; tuneTileRect(ch, x, y, w, h);
         if (tx >= x && tx < x + w && ty >= y && ty < y + h) {
             g_wifiCh   = (uint8_t)ch;
