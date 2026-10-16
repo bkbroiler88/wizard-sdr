@@ -4169,13 +4169,32 @@ static bool transmitTouch(int tx, int ty) { return txHubTouch(tx, ty); }
 static uint8_t  g_morseWpm      = 15;        // 5..30
 static uint8_t  g_morseChan     = 1;         // WiFi 1..14
 static uint8_t  g_morseLastSent = 0;         // index 0..3
-static char     g_morseCall[12] = "DE K1XYZ";  // overwritten by Settings
-static const char* kMorsePresetsStatic[4] = {
-    "CQ CQ CQ DE K1XYZ",
+// Operator's call sign in NVS. Empty = use the placeholder. Set via CLI
+// `callsign <STR>` -- the Morse presets below substitute this live.
+char            g_callsign[12]  = "";
+// Static templates; "{CALL}" is replaced with g_callsign (or N0CALL
+// placeholder) when the user picks a preset in morseExpandPreset().
+static const char* kMorsePresetTemplates[4] = {
+    "CQ CQ CQ DE {CALL}",
     "TEST TEST",
     "73 TU EE",
-    "VVV VVV K1XYZ BEACON",
+    "VVV VVV {CALL} BEACON",
 };
+static char g_morseExpandedBuf[64];
+static const char* morseExpandPreset(int idx) {
+    const char* tmpl = kMorsePresetTemplates[idx];
+    const char* call = g_callsign[0] ? g_callsign : "N0CALL";
+    const char* ins  = strstr(tmpl, "{CALL}");
+    if (!ins) return tmpl;
+    size_t pre = (size_t)(ins - tmpl);
+    size_t cl  = strlen(call);
+    size_t suf = strlen(ins + 6);
+    if (pre + cl + suf + 1 > sizeof(g_morseExpandedBuf)) return tmpl;
+    memcpy(g_morseExpandedBuf, tmpl, pre);
+    memcpy(g_morseExpandedBuf + pre, call, cl);
+    memcpy(g_morseExpandedBuf + pre + cl, ins + 6, suf + 1);
+    return g_morseExpandedBuf;
+}
 
 static constexpr int kMorseBack  = 10;
 static constexpr int kMorsePresetY = 54;
@@ -4219,7 +4238,7 @@ static void drawMorseScreen() {
         bool sel = (g_morseLastSent == (uint8_t)i);
         drawGlowButton(x, y, pw, kMorsePresetH, "", sel, 2);
         tft.setTextColor(sel ? color::WARN_AMBER : color::BRIGHT, color::BG);
-        tft.drawString(kMorsePresetsStatic[i], x + pw / 2, y + kMorsePresetH / 2, 2);
+        tft.drawString(morseExpandPreset(i), x + pw / 2, y + kMorsePresetH / 2, 2);
     }
 
     // WPM steppers (left) + CHAN steppers (right)
@@ -4267,7 +4286,7 @@ static bool morseTouch(int tx, int ty) {
             g_morseLastSent = i;
             txOokStop();                 // flush anything in flight
             delay(30);
-            txOokMorse(kMorsePresetsStatic[i], g_morseWpm, g_morseChan, 0);
+            txOokMorse(morseExpandPreset(i), g_morseWpm, g_morseChan, 0);
             return true;
         }
     }
@@ -4283,7 +4302,7 @@ static bool morseTouch(int tx, int ty) {
         if (txOokIsActive()) {
             txOokStop();
         } else {
-            txOokMorse(kMorsePresetsStatic[g_morseLastSent], g_morseWpm, g_morseChan, 0);
+            txOokMorse(morseExpandPreset(g_morseLastSent), g_morseWpm, g_morseChan, 0);
         }
         return true;
     }
@@ -4360,13 +4379,22 @@ static void drawSettingsScreen() {
                        tft.width() / 2, kResetY + kResetH / 2, 2);
     }
 
+    // --- Ham call sign readout (CLI-set via `callsign <STR>`) ---
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString("Call sign:", kSetMargin, 200, 2);
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(g_callsign[0] ? color::OK_GREEN : color::WARN_AMBER,
+                     color::BG);
+    tft.drawString(g_callsign[0] ? g_callsign : "N0CALL (set via CLI)",
+                   320 - kSetMargin, 200, 2);
+
     // Footer hint
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(color::DIM, color::BG);
+    tft.drawString("CLI: `callsign K1XYZ` to set", tft.width() / 2, 220, 1);
     tft.drawString("Reset clears all settings and reboots",
-                   tft.width() / 2, 212, 1);
-    tft.drawString("Recalibrate wipes touch cal and reboots",
-                   tft.width() / 2, 224, 1);
+                   tft.width() / 2, 232, 1);
 }
 
 static bool settingsTouch(int tx, int ty) {
@@ -4605,6 +4633,16 @@ static void loadConfig() {
     g_trigBand      = (TrigBand)p.getUChar("trigBd", (uint8_t)g_trigBand);
     g_brightness    = p.getUChar ("bright", g_brightness);
     g_bootDest      = p.getUChar ("tx_boot", 0);
+    // Ham call sign for Morse presets. Empty string means "use the hard-coded
+    // placeholder in the presets table." Setting via `callsign <STR>` CLI.
+    {
+        char buf[12] = {0};
+        size_t got = p.getBytes("call", buf, sizeof(buf) - 1);
+        if (got > 0) {
+            extern char g_callsign[12];
+            memcpy(g_callsign, buf, sizeof(buf));
+        }
+    }
     p.end();
     Serial.printf("[sh] cfg loaded: ch=%u span=%u fftN=%u agc=%d gain=%u "
                   "trigEn=%d trigTh=%u trigBd=%u bright=%u\n",
@@ -4635,6 +4673,10 @@ static void saveConfig() {
     p.putUChar ("trigBd", (uint8_t)g_trigBand);
     p.putUChar ("bright", g_brightness);
     p.putUChar ("tx_boot", g_bootDest);
+    {
+        extern char g_callsign[12];
+        if (g_callsign[0]) p.putBytes("call", g_callsign, strlen(g_callsign) + 1);
+    }
     p.end();
     g_cfgDirty      = false;
     g_cfgLastSaveMs = millis();
@@ -5416,6 +5458,29 @@ static void cliExec(char* line) {
         // Route stop through cwTask too, same as the UI button.
         g_cwReqStop = true;
         Serial.println("ok tx_stop request posted");
+        return;
+    }
+    // Set the operator's call sign for Morse presets.
+    // Usage: callsign K1XYZ   (empty arg prints current)
+    if (!strcmp(tok, "callsign")) {
+        const char* arg = strtok(NULL, " \t\r\n");
+        if (!arg) {
+            Serial.printf("ok callsign=\"%s\" (empty = N0CALL placeholder)\n",
+                          g_callsign);
+            return;
+        }
+        size_t n = strlen(arg);
+        if (n >= sizeof(g_callsign)) n = sizeof(g_callsign) - 1;
+        memcpy(g_callsign, arg, n);
+        g_callsign[n] = 0;
+        // Upper-case normalise.
+        for (size_t i = 0; i < n; i++) {
+            if (g_callsign[i] >= 'a' && g_callsign[i] <= 'z')
+                g_callsign[i] -= 32;
+        }
+        saveConfig();
+        Serial.printf("ok callsign=\"%s\" (saved; now in Morse presets)\n",
+                      g_callsign);
         return;
     }
     // Clear saved touch cal and reboot so the first-boot cal flow runs cleanly
