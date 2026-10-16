@@ -246,7 +246,15 @@ static void setBrightness(uint8_t b) {
     g_brightness = b;
     ledcWrite(kBlChannel, b);
 }
+// Normal CYD cal targets sit at 30px from the edges. The AWOK case
+// has a plastic bezel/lip that physically covers that corner zone, so
+// pressing the "target" presses the case instead -- SquachWatch found
+// the same, moved them further in. Use ~60px inset for AWOK, 30 for CYD.
+#ifdef SIGNALHOUND_AWOK
+constexpr int  kCalMargin      = 60;
+#else
 constexpr int  kCalMargin      = 30;
+#endif
 
 struct TouchCalibration {
     bool     swapXY;
@@ -4691,21 +4699,18 @@ void setup() {
     touchInit();
     bool hasCal = loadTouchCalibration();
     Serial.printf("[sh] touch cal %s\n", hasCal ? "LOADED" : "MISSING -- calibrating");
-#ifdef SIGNALHOUND_AWOK
-    // Seed a default AWOK touch cal: Marauder V6.1's XPT2046 panel reads
-    // raw ~300..3700 on both axes in portrait. Signalhound rotates to
-    // landscape; swapXY picks up the 90-degree rotation.
     if (!hasCal) {
-        touchCal.swapXY   = true;
-        touchCal.rawAtX0  = 3700;
-        touchCal.rawAtX1  = 300;
-        touchCal.rawAtY0  = 300;
-        touchCal.rawAtY1  = 3700;
-        Serial.println("[sh] AWOK: seeded default touch cal (300..3700, swapXY)");
-    }
-#else
-    if (!hasCal) runTouchCalibration();
+#ifdef SIGNALHOUND_AWOK
+        // Seed a sane default BEFORE calibration so applyTouchCalibration's
+        // map() doesn't div-by-zero while the first-tap target is up.
+        touchCal.swapXY  = true;
+        touchCal.rawAtX0 = 3700;
+        touchCal.rawAtX1 = 300;
+        touchCal.rawAtY0 = 300;
+        touchCal.rawAtY1 = 3700;
 #endif
+        runTouchCalibration();
+    }
 
     // --- SD card (optional). If present, load recent captures into the RAM ring
     // so CAPS tab shows prior-session history across reboots.
@@ -5381,6 +5386,18 @@ static void cliExec(char* line) {
         // Route stop through cwTask too, same as the UI button.
         g_cwReqStop = true;
         Serial.println("ok tx_stop request posted");
+        return;
+    }
+    // Clear saved touch cal and reboot so the first-boot cal flow runs cleanly
+    // (the live UI task would otherwise stomp cal targets).
+    if (!strcmp(tok, "touchcal")) {
+        Preferences prefs;
+        prefs.begin(kCalNamespace, false);
+        prefs.clear();
+        prefs.end();
+        Serial.println("ok cal cleared -- rebooting into 3-point touch calibration");
+        delay(100);
+        ESP.restart();
         return;
     }
     if (!strcmp(tok, "reset_rx")) {
