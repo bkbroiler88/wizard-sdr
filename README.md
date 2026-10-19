@@ -10,21 +10,36 @@ Morse CW keyer for amateur-radio operators.
 
 ## Screens
 
-**Device photos coming** — if you build this and want to contribute shots of
-the real UI, open a PR or issue with any of: Home, Live (SDR mode), Transmit
-hub, Morse keyer, Settings.
+Rendered at the firmware's real 320×240 dimensions, using the on-device
+Wizard color palette (electric blue chrome, cyan highlights, amber for TX
+and peak markers, lime for the live trace).
 
-Until then, here's what each screen does:
+### Home
 
-- **Home** — 6-tile launcher (Live, Tune, Gain, Trigger, Transmit, Settings).
-- **Live** — calibrated dBm Y-axis (user-adjustable Ref Level + Range), 10 dB
-  grid, three overlaid traces (live, per-bin average, max-hold), HackRF-style
-  filled bins showing SNR above the floor, and a full-width scanline-batched
-  waterfall below. Bottom pill strip: AGC / averaging / peak-hold / FFT size.
-- **Transmit** — 2×2 hub: CW Tone, Morse CW keyer (5-30 WPM with call-sign
-  presets), 802.11 PKT20 burst, BT Sweep. Requires call sign; respects TX cap.
-- **Tune / Gain / Trigger / Settings** — channel + span presets, manual-vs-AGC
-  gain, edge-triggered capture with band-gate, and the full knob set.
+![Home screen](docs/home.svg)
+
+6-tile launcher — Live, Tune, Gain, Trigger, Transmit, Settings — each tile
+drawn with the signature 3-stroke glow (outer dim, middle blue, inner cyan).
+
+### Live — SDR mode
+
+![Live SDR mode](docs/live.svg)
+
+Calibrated dBm Y-axis (−30 to −100 by default, Ref Level + Range both
+adjustable from Settings), 10 dB dashed grid, HackRF-style filled bins
+rising from the cyan noise-floor dot line, amber max-hold ridge, and a
+full-width scanline-batched waterfall. Peak bin wears an amber cap. Pill
+strip shows AGC / AVG / PK HOLD / FFT size.
+
+### Settings
+
+![Settings](docs/settings.svg)
+
+Eight adjustable rows (Call sign, Morse WPM, Brightness, TX cap dBm,
+Waterfall Floor + Gain, SDR Ref Level + Range) and a 4-pill action row:
+**Rot** advances the display orientation and clears touch cal, **Inv**
+toggles LCD inversion live, **Recal** restarts the 3-point touch
+calibration, **Reset** is a 2-tap armed factory wipe.
 
 ## Install (pre-built, no toolchain)
 

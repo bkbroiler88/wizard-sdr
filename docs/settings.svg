@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" width="640" height="480" shape-rendering="geometricPrecision">
+  <style>
+    .bg{fill:#000}
+    .shadow{fill:none;stroke:#000846;stroke-width:1}
+    .dim-stroke{fill:none;stroke:#00669c;stroke-width:1}
+    .mid-stroke{fill:none;stroke:#0075ff;stroke-width:1}
+    .bright-stroke{fill:none;stroke:#00ffff;stroke-width:1}
+    .label-bright{font-family:'Courier New',monospace;font-size:9px;fill:#00ffff;font-weight:bold}
+    .title-dim{font-family:'Courier New',monospace;font-size:18px;fill:#0075ff;font-weight:bold;letter-spacing:2px}
+    .title-bright{font-family:'Courier New',monospace;font-size:18px;fill:#00ffff;font-weight:bold;letter-spacing:2px}
+    .row-label{font-family:'Courier New',monospace;font-size:10px;fill:#0075ff}
+    .row-value{font-family:'Courier New',monospace;font-size:10px;fill:#00ffff}
+    .btn-bright{font-family:'Courier New',monospace;font-size:11px;fill:#00ffff;font-weight:bold}
+  </style>
+  <rect class="bg" width="320" height="240"/>
+
+  <!-- Home corner button -->
+  <g>
+    <rect class="shadow" x="8" y="8" width="70" height="26" rx="8"/>
+    <rect class="dim-stroke" x="4" y="4" width="74" height="30" rx="10"/>
+    <rect class="mid-stroke" x="5" y="5" width="72" height="28" rx="9"/>
+    <rect class="bright-stroke" x="6" y="6" width="70" height="26" rx="8"/>
+    <text class="label-bright" x="41" y="24" text-anchor="middle">Home</text>
+  </g>
+
+  <!-- Title -->
+  <text class="title-dim" x="161" y="22" text-anchor="middle">SETTINGS</text>
+  <text class="title-bright" x="160" y="21" text-anchor="middle">SETTINGS</text>
+
+  <!-- 8 rows of settings, Y 54..194 stride 20 -->
+  <!-- Row 0: Call sign -->
+  <text class="row-label" x="10" y="57" text-anchor="start">Call sign</text>
+  <text class="row-value" x="310" y="57" text-anchor="end">N0CALL</text>
+  <!-- Row 1: Morse WPM nudger -->
+  <text class="row-label" x="10" y="77" text-anchor="start">Morse WPM</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="68" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="69" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="70" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="83" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="83" text-anchor="middle">20</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="68" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="69" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="70" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="83" text-anchor="middle">+</text>
+  </g>
+  <!-- Row 2: Brightness -->
+  <text class="row-label" x="10" y="97" text-anchor="start">Brightness</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="88" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="89" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="90" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="103" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="103" text-anchor="middle">100%</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="88" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="89" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="90" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="103" text-anchor="middle">+</text>
+  </g>
+  <!-- Row 3: TX cap dBm -->
+  <text class="row-label" x="10" y="117" text-anchor="start">TX cap  dBm</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="108" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="109" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="110" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="123" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="123" text-anchor="middle">19.5</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="108" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="109" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="110" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="123" text-anchor="middle">+</text>
+  </g>
+  <!-- Row 4: WF Floor -->
+  <text class="row-label" x="10" y="137" text-anchor="start">WF Floor</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="128" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="129" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="130" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="143" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="143" text-anchor="middle">120</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="128" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="129" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="130" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="143" text-anchor="middle">+</text>
+  </g>
+  <!-- Row 5: WF Gain -->
+  <text class="row-label" x="10" y="157" text-anchor="start">WF Gain</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="148" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="149" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="150" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="163" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="163" text-anchor="middle">x2</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="148" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="149" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="150" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="163" text-anchor="middle">+</text>
+  </g>
+  <!-- Row 6: Ref Level -->
+  <text class="row-label" x="10" y="177" text-anchor="start">Ref Level</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="168" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="169" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="170" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="183" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="183" text-anchor="middle">-30 dBm</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="168" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="169" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="170" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="183" text-anchor="middle">+</text>
+  </g>
+  <!-- Row 7: Range -->
+  <text class="row-label" x="10" y="197" text-anchor="start">Range</text>
+  <g>
+    <rect class="dim-stroke" x="194" y="188" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="195" y="189" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="196" y="190" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="212" y="203" text-anchor="middle">-</text>
+  </g>
+  <text class="row-value" x="250" y="203" text-anchor="middle">70 dB</text>
+  <g>
+    <rect class="dim-stroke" x="266" y="188" width="36" height="20" rx="4"/>
+    <rect class="mid-stroke" x="267" y="189" width="34" height="18" rx="3"/>
+    <rect class="bright-stroke" x="268" y="190" width="32" height="16" rx="2"/>
+    <text class="btn-bright" x="284" y="203" text-anchor="middle">+</text>
+  </g>
+
+  <!-- Pill row Y=206, 4 buttons: Rot 1 | Inv off | Recal | Reset -->
+  <g>
+    <rect class="dim-stroke" x="8" y="208" width="72" height="26" rx="8"/>
+    <rect class="mid-stroke" x="9" y="209" width="70" height="24" rx="7"/>
+    <rect class="bright-stroke" x="10" y="210" width="68" height="22" rx="6"/>
+    <text class="label-bright" x="44" y="225" text-anchor="middle">Rot 1</text>
+  </g>
+  <g>
+    <rect class="dim-stroke" x="86" y="208" width="72" height="26" rx="8"/>
+    <rect class="mid-stroke" x="87" y="209" width="70" height="24" rx="7"/>
+    <rect class="bright-stroke" x="88" y="210" width="68" height="22" rx="6"/>
+    <text class="label-bright" x="122" y="225" text-anchor="middle">Inv off</text>
+  </g>
+  <g>
+    <rect class="dim-stroke" x="164" y="208" width="72" height="26" rx="8"/>
+    <rect class="mid-stroke" x="165" y="209" width="70" height="24" rx="7"/>
+    <rect class="bright-stroke" x="166" y="210" width="68" height="22" rx="6"/>
+    <text class="label-bright" x="200" y="225" text-anchor="middle">Recal</text>
+  </g>
+  <g>
+    <rect class="dim-stroke" x="242" y="208" width="72" height="26" rx="8"/>
+    <rect class="mid-stroke" x="243" y="209" width="70" height="24" rx="7"/>
+    <rect class="bright-stroke" x="244" y="210" width="68" height="22" rx="6"/>
+    <text class="label-bright" x="278" y="225" text-anchor="middle">Reset</text>
+  </g>
+</svg>

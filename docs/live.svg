@@ -1,0 +1,310 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" width="640" height="480" shape-rendering="crispEdges">
+  <style>
+    .bg{fill:#000}
+    .shadow{fill:none;stroke:#000846;stroke-width:1}
+    .dim-stroke{fill:none;stroke:#00669c;stroke-width:1}
+    .mid-stroke{fill:none;stroke:#0075ff;stroke-width:1}
+    .bright-stroke{fill:none;stroke:#00ffff;stroke-width:1}
+    .label-bright{font-family:'Courier New',monospace;font-size:11px;fill:#00ffff;font-weight:bold}
+    .axis-label{font-family:'Courier New',monospace;font-size:7px;fill:#00669c}
+    .readings{font-family:'Courier New',monospace;font-size:11px;fill:#0075ff}
+    .plot-sep{stroke:#0075ff;stroke-width:1}
+    .grid{stroke:#001a2a;stroke-width:0.5;stroke-dasharray:2 4}
+    .bin-fill{fill:#AAE678;fill-opacity:0.35}
+    .bin-top{fill:#AAE678}
+    .avg-dot{fill:#0075ff}
+    .maxhold{fill:#996300}
+    .peak{fill:#ffa500}
+    .pill-green{fill:none;stroke:#00ff00;stroke-width:0.8}
+    .pill-amber{fill:none;stroke:#ffa500;stroke-width:0.8}
+    .pill-dim{fill:none;stroke:#00669c;stroke-width:0.8}
+    .pill-text-g{font-family:'Courier New',monospace;font-size:8px;fill:#00ff00}
+    .pill-text-a{font-family:'Courier New',monospace;font-size:8px;fill:#ffa500}
+    .pill-text-d{font-family:'Courier New',monospace;font-size:8px;fill:#00669c}
+  </style>
+  <rect class="bg" width="320" height="240"/>
+
+  <!-- Top corners: Tune (left), HOP (right), readings (center) -->
+  <g>
+    <rect class="shadow" x="8" y="8" width="70" height="26" rx="8"/>
+    <rect class="dim-stroke" x="4" y="4" width="74" height="30" rx="10"/>
+    <rect class="mid-stroke" x="5" y="5" width="72" height="28" rx="9"/>
+    <rect class="bright-stroke" x="6" y="6" width="70" height="26" rx="8"/>
+    <text class="label-bright" x="41" y="23" text-anchor="middle">Tune</text>
+  </g>
+  <!-- Readings strip -->
+  <text class="readings" x="264" y="24" text-anchor="end">2442 AGC -34</text>
+  <!-- HOP chip -->
+  <g>
+    <rect class="shadow" x="272" y="8" width="44" height="26" rx="8"/>
+    <rect class="dim-stroke" x="268" y="4" width="48" height="30" rx="10"/>
+    <rect class="mid-stroke" x="269" y="5" width="46" height="28" rx="9"/>
+    <rect class="bright-stroke" x="270" y="6" width="44" height="26" rx="8"/>
+    <text class="label-bright" x="292" y="23" text-anchor="middle">HOP</text>
+  </g>
+
+  <!-- dBm labels right-aligned at x=26 (plotLeft=28, label at plotLeft-2) -->
+  <text class="axis-label" x="26" y="42" text-anchor="end">-30</text>
+  <text class="axis-label" x="26" y="57" text-anchor="end">-40</text>
+  <text class="axis-label" x="26" y="72" text-anchor="end">-50</text>
+  <text class="axis-label" x="26" y="87" text-anchor="end">-60</text>
+  <text class="axis-label" x="26" y="102" text-anchor="end">-70</text>
+  <text class="axis-label" x="26" y="117" text-anchor="end">-80</text>
+  <text class="axis-label" x="26" y="132" text-anchor="end">-90</text>
+  <text class="axis-label" x="26" y="147" text-anchor="end">-100</text>
+
+  <!-- Grid lines (dashed, every 10 dB, inside plot x=28..314) -->
+  <g>
+    <line class="grid" x1="28" y1="40" x2="314" y2="40"/>
+    <line class="grid" x1="28" y1="55" x2="314" y2="55"/>
+    <line class="grid" x1="28" y1="70" x2="314" y2="70"/>
+    <line class="grid" x1="28" y1="85" x2="314" y2="85"/>
+    <line class="grid" x1="28" y1="100" x2="314" y2="100"/>
+    <line class="grid" x1="28" y1="115" x2="314" y2="115"/>
+    <line class="grid" x1="28" y1="130" x2="314" y2="130"/>
+    <line class="grid" x1="28" y1="145" x2="314" y2="145"/>
+  </g>
+
+  <!-- Plot/axis separator vertical line in MID -->
+  <line class="plot-sep" x1="27" y1="40" x2="27" y2="148"/>
+
+  <!-- Bin columns: 128 bins across 286 px. Dense noise + WiFi carrier bump center.
+       Noise floor avg_y ~ 135, carrier peaks ~44. Each bin: dim green fill from live_y to avg_y, bright cap at live_y. -->
+  <g>
+    <!-- Noise bins (y ~128-135, floor avg at 135) -->
+    <!-- Generate 50 noise bins left of center -->
+    <g>
+      <rect class="bin-fill" x="28" y="128" width="2" height="7"/><rect class="bin-top" x="28" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="30" y="130" width="2" height="5"/><rect class="bin-top" x="30" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="32" y="126" width="2" height="9"/><rect class="bin-top" x="32" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="34" y="129" width="2" height="6"/><rect class="bin-top" x="34" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="36" y="131" width="2" height="4"/><rect class="bin-top" x="36" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="38" y="127" width="2" height="8"/><rect class="bin-top" x="38" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="40" y="130" width="2" height="5"/><rect class="bin-top" x="40" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="42" y="128" width="2" height="7"/><rect class="bin-top" x="42" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="44" y="126" width="2" height="9"/><rect class="bin-top" x="44" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="46" y="129" width="2" height="6"/><rect class="bin-top" x="46" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="48" y="131" width="2" height="4"/><rect class="bin-top" x="48" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="50" y="128" width="2" height="7"/><rect class="bin-top" x="50" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="52" y="130" width="2" height="5"/><rect class="bin-top" x="52" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="54" y="127" width="2" height="8"/><rect class="bin-top" x="54" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="56" y="129" width="2" height="6"/><rect class="bin-top" x="56" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="58" y="131" width="2" height="4"/><rect class="bin-top" x="58" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="60" y="128" width="2" height="7"/><rect class="bin-top" x="60" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="62" y="130" width="2" height="5"/><rect class="bin-top" x="62" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="64" y="126" width="2" height="9"/><rect class="bin-top" x="64" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="66" y="129" width="2" height="6"/><rect class="bin-top" x="66" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="68" y="131" width="2" height="4"/><rect class="bin-top" x="68" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="70" y="128" width="2" height="7"/><rect class="bin-top" x="70" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="72" y="130" width="2" height="5"/><rect class="bin-top" x="72" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="74" y="127" width="2" height="8"/><rect class="bin-top" x="74" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="76" y="131" width="2" height="4"/><rect class="bin-top" x="76" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="78" y="128" width="2" height="7"/><rect class="bin-top" x="78" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="80" y="130" width="2" height="5"/><rect class="bin-top" x="80" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="82" y="129" width="2" height="6"/><rect class="bin-top" x="82" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="84" y="128" width="2" height="7"/><rect class="bin-top" x="84" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="86" y="126" width="2" height="9"/><rect class="bin-top" x="86" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="88" y="130" width="2" height="5"/><rect class="bin-top" x="88" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="90" y="131" width="2" height="4"/><rect class="bin-top" x="90" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="92" y="128" width="2" height="7"/><rect class="bin-top" x="92" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="94" y="127" width="2" height="8"/><rect class="bin-top" x="94" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="96" y="130" width="2" height="5"/><rect class="bin-top" x="96" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="98" y="129" width="2" height="6"/><rect class="bin-top" x="98" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="100" y="128" width="2" height="7"/><rect class="bin-top" x="100" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="102" y="130" width="2" height="5"/><rect class="bin-top" x="102" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="104" y="129" width="2" height="6"/><rect class="bin-top" x="104" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="106" y="127" width="2" height="8"/><rect class="bin-top" x="106" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="108" y="131" width="2" height="4"/><rect class="bin-top" x="108" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="110" y="128" width="2" height="7"/><rect class="bin-top" x="110" y="128" width="2" height="1"/>
+      <!-- WiFi carrier rises: bins 112..202 reach up near -35 to -45 dBm -->
+      <rect class="bin-fill" x="112" y="118" width="2" height="17"/><rect class="bin-top" x="112" y="118" width="2" height="1"/>
+      <rect class="bin-fill" x="114" y="100" width="2" height="35"/><rect class="bin-top" x="114" y="100" width="2" height="1"/>
+      <rect class="bin-fill" x="116" y="85" width="2" height="50"/><rect class="bin-top" x="116" y="85" width="2" height="1"/>
+      <rect class="bin-fill" x="118" y="70" width="2" height="65"/><rect class="bin-top" x="118" y="70" width="2" height="1"/>
+      <rect class="bin-fill" x="120" y="58" width="2" height="77"/><rect class="bin-top" x="120" y="58" width="2" height="1"/>
+      <rect class="bin-fill" x="122" y="54" width="2" height="81"/><rect class="bin-top" x="122" y="54" width="2" height="1"/>
+      <rect class="bin-fill" x="124" y="52" width="2" height="83"/><rect class="bin-top" x="124" y="52" width="2" height="1"/>
+      <rect class="bin-fill" x="126" y="50" width="2" height="85"/><rect class="bin-top" x="126" y="50" width="2" height="1"/>
+      <rect class="bin-fill" x="128" y="49" width="2" height="86"/><rect class="bin-top" x="128" y="49" width="2" height="1"/>
+      <rect class="bin-fill" x="130" y="48" width="2" height="87"/><rect class="bin-top" x="130" y="48" width="2" height="1"/>
+      <rect class="bin-fill" x="132" y="47" width="2" height="88"/><rect class="bin-top" x="132" y="47" width="2" height="1"/>
+      <rect class="bin-fill" x="134" y="46" width="2" height="89"/><rect class="bin-top" x="134" y="46" width="2" height="1"/>
+      <rect class="bin-fill" x="136" y="46" width="2" height="89"/><rect class="bin-top" x="136" y="46" width="2" height="1"/>
+      <rect class="bin-fill" x="138" y="45" width="2" height="90"/><rect class="bin-top" x="138" y="45" width="2" height="1"/>
+      <rect class="bin-fill" x="140" y="45" width="2" height="90"/><rect class="bin-top" x="140" y="45" width="2" height="1"/>
+      <rect class="bin-fill" x="142" y="44" width="2" height="91"/><rect class="bin-top" x="142" y="44" width="2" height="1"/>
+      <rect class="bin-fill" x="144" y="44" width="2" height="91"/><rect class="bin-top" x="144" y="44" width="2" height="1"/>
+      <!-- Peak bin: amber cap -->
+      <rect class="bin-fill" x="146" y="43" width="2" height="92"/><rect class="peak" x="146" y="42" width="2" height="3"/>
+      <rect class="bin-fill" x="148" y="44" width="2" height="91"/><rect class="bin-top" x="148" y="44" width="2" height="1"/>
+      <rect class="bin-fill" x="150" y="44" width="2" height="91"/><rect class="bin-top" x="150" y="44" width="2" height="1"/>
+      <rect class="bin-fill" x="152" y="45" width="2" height="90"/><rect class="bin-top" x="152" y="45" width="2" height="1"/>
+      <rect class="bin-fill" x="154" y="45" width="2" height="90"/><rect class="bin-top" x="154" y="45" width="2" height="1"/>
+      <rect class="bin-fill" x="156" y="46" width="2" height="89"/><rect class="bin-top" x="156" y="46" width="2" height="1"/>
+      <rect class="bin-fill" x="158" y="46" width="2" height="89"/><rect class="bin-top" x="158" y="46" width="2" height="1"/>
+      <rect class="bin-fill" x="160" y="47" width="2" height="88"/><rect class="bin-top" x="160" y="47" width="2" height="1"/>
+      <rect class="bin-fill" x="162" y="48" width="2" height="87"/><rect class="bin-top" x="162" y="48" width="2" height="1"/>
+      <rect class="bin-fill" x="164" y="50" width="2" height="85"/><rect class="bin-top" x="164" y="50" width="2" height="1"/>
+      <rect class="bin-fill" x="166" y="52" width="2" height="83"/><rect class="bin-top" x="166" y="52" width="2" height="1"/>
+      <rect class="bin-fill" x="168" y="54" width="2" height="81"/><rect class="bin-top" x="168" y="54" width="2" height="1"/>
+      <rect class="bin-fill" x="170" y="58" width="2" height="77"/><rect class="bin-top" x="170" y="58" width="2" height="1"/>
+      <rect class="bin-fill" x="172" y="63" width="2" height="72"/><rect class="bin-top" x="172" y="63" width="2" height="1"/>
+      <rect class="bin-fill" x="174" y="70" width="2" height="65"/><rect class="bin-top" x="174" y="70" width="2" height="1"/>
+      <rect class="bin-fill" x="176" y="78" width="2" height="57"/><rect class="bin-top" x="176" y="78" width="2" height="1"/>
+      <rect class="bin-fill" x="178" y="88" width="2" height="47"/><rect class="bin-top" x="178" y="88" width="2" height="1"/>
+      <rect class="bin-fill" x="180" y="100" width="2" height="35"/><rect class="bin-top" x="180" y="100" width="2" height="1"/>
+      <rect class="bin-fill" x="182" y="118" width="2" height="17"/><rect class="bin-top" x="182" y="118" width="2" height="1"/>
+      <!-- noise bins right of carrier -->
+      <rect class="bin-fill" x="184" y="128" width="2" height="7"/><rect class="bin-top" x="184" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="186" y="130" width="2" height="5"/><rect class="bin-top" x="186" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="188" y="127" width="2" height="8"/><rect class="bin-top" x="188" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="190" y="129" width="2" height="6"/><rect class="bin-top" x="190" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="192" y="131" width="2" height="4"/><rect class="bin-top" x="192" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="194" y="128" width="2" height="7"/><rect class="bin-top" x="194" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="196" y="130" width="2" height="5"/><rect class="bin-top" x="196" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="198" y="126" width="2" height="9"/><rect class="bin-top" x="198" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="200" y="129" width="2" height="6"/><rect class="bin-top" x="200" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="202" y="131" width="2" height="4"/><rect class="bin-top" x="202" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="204" y="128" width="2" height="7"/><rect class="bin-top" x="204" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="206" y="130" width="2" height="5"/><rect class="bin-top" x="206" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="208" y="127" width="2" height="8"/><rect class="bin-top" x="208" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="210" y="131" width="2" height="4"/><rect class="bin-top" x="210" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="212" y="128" width="2" height="7"/><rect class="bin-top" x="212" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="214" y="130" width="2" height="5"/><rect class="bin-top" x="214" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="216" y="129" width="2" height="6"/><rect class="bin-top" x="216" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="218" y="128" width="2" height="7"/><rect class="bin-top" x="218" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="220" y="131" width="2" height="4"/><rect class="bin-top" x="220" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="222" y="128" width="2" height="7"/><rect class="bin-top" x="222" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="224" y="126" width="2" height="9"/><rect class="bin-top" x="224" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="226" y="130" width="2" height="5"/><rect class="bin-top" x="226" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="228" y="129" width="2" height="6"/><rect class="bin-top" x="228" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="230" y="131" width="2" height="4"/><rect class="bin-top" x="230" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="232" y="128" width="2" height="7"/><rect class="bin-top" x="232" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="234" y="127" width="2" height="8"/><rect class="bin-top" x="234" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="236" y="130" width="2" height="5"/><rect class="bin-top" x="236" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="238" y="129" width="2" height="6"/><rect class="bin-top" x="238" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="240" y="128" width="2" height="7"/><rect class="bin-top" x="240" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="242" y="131" width="2" height="4"/><rect class="bin-top" x="242" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="244" y="128" width="2" height="7"/><rect class="bin-top" x="244" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="246" y="130" width="2" height="5"/><rect class="bin-top" x="246" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="248" y="126" width="2" height="9"/><rect class="bin-top" x="248" y="126" width="2" height="1"/>
+      <rect class="bin-fill" x="250" y="129" width="2" height="6"/><rect class="bin-top" x="250" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="252" y="131" width="2" height="4"/><rect class="bin-top" x="252" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="254" y="128" width="2" height="7"/><rect class="bin-top" x="254" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="256" y="130" width="2" height="5"/><rect class="bin-top" x="256" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="258" y="127" width="2" height="8"/><rect class="bin-top" x="258" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="260" y="131" width="2" height="4"/><rect class="bin-top" x="260" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="262" y="128" width="2" height="7"/><rect class="bin-top" x="262" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="264" y="129" width="2" height="6"/><rect class="bin-top" x="264" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="266" y="130" width="2" height="5"/><rect class="bin-top" x="266" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="268" y="128" width="2" height="7"/><rect class="bin-top" x="268" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="270" y="131" width="2" height="4"/><rect class="bin-top" x="270" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="272" y="128" width="2" height="7"/><rect class="bin-top" x="272" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="274" y="130" width="2" height="5"/><rect class="bin-top" x="274" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="276" y="129" width="2" height="6"/><rect class="bin-top" x="276" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="278" y="131" width="2" height="4"/><rect class="bin-top" x="278" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="280" y="128" width="2" height="7"/><rect class="bin-top" x="280" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="282" y="127" width="2" height="8"/><rect class="bin-top" x="282" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="284" y="130" width="2" height="5"/><rect class="bin-top" x="284" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="286" y="129" width="2" height="6"/><rect class="bin-top" x="286" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="288" y="128" width="2" height="7"/><rect class="bin-top" x="288" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="290" y="131" width="2" height="4"/><rect class="bin-top" x="290" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="292" y="128" width="2" height="7"/><rect class="bin-top" x="292" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="294" y="130" width="2" height="5"/><rect class="bin-top" x="294" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="296" y="129" width="2" height="6"/><rect class="bin-top" x="296" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="298" y="128" width="2" height="7"/><rect class="bin-top" x="298" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="300" y="131" width="2" height="4"/><rect class="bin-top" x="300" y="131" width="2" height="1"/>
+      <rect class="bin-fill" x="302" y="127" width="2" height="8"/><rect class="bin-top" x="302" y="127" width="2" height="1"/>
+      <rect class="bin-fill" x="304" y="130" width="2" height="5"/><rect class="bin-top" x="304" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="306" y="129" width="2" height="6"/><rect class="bin-top" x="306" y="129" width="2" height="1"/>
+      <rect class="bin-fill" x="308" y="128" width="2" height="7"/><rect class="bin-top" x="308" y="128" width="2" height="1"/>
+      <rect class="bin-fill" x="310" y="130" width="2" height="5"/><rect class="bin-top" x="310" y="130" width="2" height="1"/>
+      <rect class="bin-fill" x="312" y="129" width="2" height="6"/><rect class="bin-top" x="312" y="129" width="2" height="1"/>
+    </g>
+  </g>
+
+  <!-- Cyan average dots at ~y=135 across the plot -->
+  <g>
+    <rect class="avg-dot" x="28" y="135" width="1" height="1"/>
+    <rect class="avg-dot" x="60" y="135" width="1" height="1"/>
+    <rect class="avg-dot" x="92" y="135" width="1" height="1"/>
+    <rect class="avg-dot" x="120" y="90" width="1" height="1"/>
+    <rect class="avg-dot" x="140" y="60" width="1" height="1"/>
+    <rect class="avg-dot" x="146" y="55" width="1" height="1"/>
+    <rect class="avg-dot" x="155" y="60" width="1" height="1"/>
+    <rect class="avg-dot" x="175" y="90" width="1" height="1"/>
+    <rect class="avg-dot" x="210" y="135" width="1" height="1"/>
+    <rect class="avg-dot" x="240" y="135" width="1" height="1"/>
+    <rect class="avg-dot" x="270" y="135" width="1" height="1"/>
+    <rect class="avg-dot" x="300" y="135" width="1" height="1"/>
+  </g>
+
+  <!-- Max-hold amber ridge above live (dim amber dots) -->
+  <g>
+    <rect class="maxhold" x="130" y="42" width="1" height="1"/>
+    <rect class="maxhold" x="140" y="40" width="1" height="1"/>
+    <rect class="maxhold" x="146" y="40" width="1" height="1"/>
+    <rect class="maxhold" x="155" y="41" width="1" height="1"/>
+    <rect class="maxhold" x="165" y="44" width="1" height="1"/>
+  </g>
+
+  <!-- Waterfall: full width 6..314, kWfTop=152 to 224, 36 rows of 2px -->
+  <!-- Newest at top. Mix dark base + colored band under WiFi carrier center -->
+  <g>
+    <!-- Rows 0..5 (newest) -->
+    <rect x="6" y="152" width="308" height="2" fill="#030a1a"/>
+    <rect x="110" y="152" width="80" height="2" fill="#163a68"/>
+    <rect x="118" y="152" width="64" height="2" fill="#2b6ab8"/>
+    <rect x="126" y="152" width="48" height="2" fill="#5c9bc9"/>
+    <rect x="134" y="152" width="32" height="2" fill="#c0bd50"/>
+    <rect x="138" y="152" width="24" height="2" fill="#dc8a30"/>
+
+    <rect x="6" y="154" width="308" height="2" fill="#030a1a"/>
+    <rect x="110" y="154" width="80" height="2" fill="#163a68"/>
+    <rect x="118" y="154" width="64" height="2" fill="#2b6ab8"/>
+    <rect x="126" y="154" width="48" height="2" fill="#5c9bc9"/>
+    <rect x="134" y="154" width="32" height="2" fill="#c0bd50"/>
+    <rect x="138" y="154" width="24" height="2" fill="#dc8a30"/>
+
+    <rect x="6" y="156" width="308" height="2" fill="#030a1a"/>
+    <rect x="110" y="156" width="80" height="2" fill="#163a68"/>
+    <rect x="118" y="156" width="64" height="2" fill="#2b6ab8"/>
+    <rect x="126" y="156" width="48" height="2" fill="#5c9bc9"/>
+    <rect x="134" y="156" width="32" height="2" fill="#c0bd50"/>
+
+    <rect x="6" y="158" width="308" height="2" fill="#030a1a"/>
+    <rect x="110" y="158" width="80" height="2" fill="#122c54"/>
+    <rect x="120" y="158" width="60" height="2" fill="#2b6ab8"/>
+    <rect x="128" y="158" width="44" height="2" fill="#5c9bc9"/>
+
+    <rect x="6" y="160" width="308" height="2" fill="#030a1a"/>
+    <rect x="112" y="160" width="76" height="2" fill="#122c54"/>
+    <rect x="122" y="160" width="56" height="2" fill="#2b6ab8"/>
+
+    <rect x="6" y="162" width="308" height="2" fill="#030a1a"/>
+    <rect x="114" y="162" width="72" height="2" fill="#0e2448"/>
+    <rect x="124" y="162" width="52" height="2" fill="#1a467a"/>
+
+    <!-- Rows 6..17: fading carrier -->
+    <rect x="6" y="164" width="308" height="24" fill="#030a1a"/>
+    <rect x="112" y="164" width="76" height="24" fill="#0a1e38"/>
+    <rect x="118" y="164" width="64" height="12" fill="#102c54"/>
+    <rect x="124" y="164" width="52" height="8" fill="#1a467a"/>
+
+    <!-- Rows 18..35: oldest -->
+    <rect x="6" y="188" width="308" height="36" fill="#030a1a"/>
+    <rect x="114" y="188" width="72" height="20" fill="#071a30"/>
+  </g>
+
+  <!-- Pill strip at kPillStripTop=225 -->
+  <g>
+    <rect class="pill-green" x="4" y="225" width="72" height="12" rx="3"/>
+    <text class="pill-text-g" x="40" y="234" text-anchor="middle">AGC</text>
+    <rect class="pill-dim" x="80" y="225" width="72" height="12" rx="3"/>
+    <text class="pill-text-d" x="116" y="234" text-anchor="middle">AVG x4</text>
+    <rect class="pill-amber" x="156" y="225" width="76" height="12" rx="3"/>
+    <text class="pill-text-a" x="194" y="234" text-anchor="middle">PK HOLD</text>
+    <rect class="pill-dim" x="236" y="225" width="80" height="12" rx="3"/>
+    <text class="pill-text-d" x="276" y="234" text-anchor="middle">FFT 128</text>
+  </g>
+</svg>

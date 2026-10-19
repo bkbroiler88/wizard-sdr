@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" width="640" height="480" shape-rendering="geometricPrecision">
+  <style>
+    .bg{fill:#000}
+    .dim{fill:none;stroke:#00669c;stroke-width:1}
+    .mid{fill:none;stroke:#0075ff;stroke-width:1}
+    .bright{fill:none;stroke:#00ffff;stroke-width:1}
+    .shadow{fill:none;stroke:#000846;stroke-width:1}
+    .label{font-family:'Courier New',monospace;font-size:12px;fill:#00ffff;font-weight:bold}
+    .title-dim{font-family:'Courier New',monospace;font-size:22px;fill:#0075ff;font-weight:bold;letter-spacing:2px}
+    .title-bright{font-family:'Courier New',monospace;font-size:22px;fill:#00ffff;font-weight:bold;letter-spacing:2px}
+  </style>
+  <rect class="bg" width="320" height="240"/>
+
+  <!-- Glow title: shadow then bright -->
+  <text class="title-dim" x="161" y="31" text-anchor="middle">WIZARDS SDR</text>
+  <text class="title-bright" x="160" y="30" text-anchor="middle">WIZARDS SDR</text>
+
+  <!-- 6 tiles: 3 cols x 2 rows, each ~93x83 -->
+  <!-- Row 1 -->
+  <g>
+    <!-- Live -->
+    <rect class="shadow" x="12" y="56" width="93" height="83" rx="8"/>
+    <rect class="dim" x="8" y="52" width="97" height="87" rx="10"/>
+    <rect class="mid" x="9" y="53" width="95" height="85" rx="9"/>
+    <rect class="bright" x="10" y="54" width="93" height="83" rx="8"/>
+    <text class="label" x="56" y="100" text-anchor="middle">Live</text>
+  </g>
+  <g>
+    <!-- Tune -->
+    <rect class="shadow" x="115" y="56" width="93" height="83" rx="8"/>
+    <rect class="dim" x="111" y="52" width="97" height="87" rx="10"/>
+    <rect class="mid" x="112" y="53" width="95" height="85" rx="9"/>
+    <rect class="bright" x="113" y="54" width="93" height="83" rx="8"/>
+    <text class="label" x="159" y="100" text-anchor="middle">Tune</text>
+  </g>
+  <g>
+    <!-- Gain -->
+    <rect class="shadow" x="218" y="56" width="93" height="83" rx="8"/>
+    <rect class="dim" x="214" y="52" width="97" height="87" rx="10"/>
+    <rect class="mid" x="215" y="53" width="95" height="85" rx="9"/>
+    <rect class="bright" x="216" y="54" width="93" height="83" rx="8"/>
+    <text class="label" x="262" y="100" text-anchor="middle">Gain</text>
+  </g>
+
+  <!-- Row 2 -->
+  <g>
+    <!-- Trigger -->
+    <rect class="shadow" x="12" y="149" width="93" height="83" rx="8"/>
+    <rect class="dim" x="8" y="145" width="97" height="87" rx="10"/>
+    <rect class="mid" x="9" y="146" width="95" height="85" rx="9"/>
+    <rect class="bright" x="10" y="147" width="93" height="83" rx="8"/>
+    <text class="label" x="56" y="193" text-anchor="middle">Trigger</text>
+  </g>
+  <g>
+    <!-- Transmit -->
+    <rect class="shadow" x="115" y="149" width="93" height="83" rx="8"/>
+    <rect class="dim" x="111" y="145" width="97" height="87" rx="10"/>
+    <rect class="mid" x="112" y="146" width="95" height="85" rx="9"/>
+    <rect class="bright" x="113" y="147" width="93" height="83" rx="8"/>
+    <text class="label" x="159" y="193" text-anchor="middle">Transmit</text>
+  </g>
+  <g>
+    <!-- Settings -->
+    <rect class="shadow" x="218" y="149" width="93" height="83" rx="8"/>
+    <rect class="dim" x="214" y="145" width="97" height="87" rx="10"/>
+    <rect class="mid" x="215" y="146" width="95" height="85" rx="9"/>
+    <rect class="bright" x="216" y="147" width="93" height="83" rx="8"/>
+    <text class="label" x="262" y="193" text-anchor="middle">Settings</text>
+  </g>
+</svg>

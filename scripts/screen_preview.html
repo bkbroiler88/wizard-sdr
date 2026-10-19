@@ -1,0 +1,56 @@
+<title>Wizards SDR Screens</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  :root {
+    --bg: #0a0d12;
+    --fg: #d8e0ec;
+    --mid: #7a8699;
+    --surface: #131821;
+    --accent: #00ffff;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 24px; margin: 0;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  h1 { font-family: ui-monospace, monospace; font-size: 1.1rem; margin: 0 0 20px;
+       letter-spacing: 0.08em; text-transform: uppercase; color: var(--mid); }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--surface); border: 1px solid #1e2531;
+    border-radius: 10px; padding: 14px; min-width: 0;
+  }
+  .label { font-family: ui-monospace, monospace; font-size: 0.78rem;
+           color: var(--mid); margin-bottom: 10px; text-transform: uppercase;
+           letter-spacing: 0.08em; }
+  .label b { color: var(--fg); }
+  .frame {
+    width: 100%; aspect-ratio: 320/240; background: #000;
+    border-radius: 4px; border: 1px solid #222a38;
+    display: block;
+  }
+  .frame img { width: 100%; height: 100%; display: block; }
+</style>
+<div class="wrap">
+  <h1>Wizards SDR — Screen Mockups (actual palette, actual dimensions)</h1>
+  <div class="grid">
+    <div class="panel">
+      <div class="label"><b>Home</b></div>
+      <div class="frame"><img src="home.svg" alt="Home"/></div>
+    </div>
+    <div class="panel">
+      <div class="label"><b>Live</b> — SDR mode</div>
+      <div class="frame"><img src="live.svg" alt="Live SDR mode"/></div>
+    </div>
+    <div class="panel">
+      <div class="label"><b>Settings</b></div>
+      <div class="frame"><img src="settings.svg" alt="Settings"/></div>
+    </div>
+  </div>
+</div>
