@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" width="640" height="480" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      .bg{fill:#0a0d12}
+      .title{font-family:monospace;font-size:12px;fill:#ffb347;letter-spacing:1px}
+      .tile{fill:none;stroke:#5fd38a;stroke-width:1}
+      .tile-glow{fill:none;stroke:#1a4a2b;stroke-width:1}
+      .tile-text{font-family:monospace;font-size:12px;fill:#5fd38a}
+      .tile-sub{font-family:monospace;font-size:7px;fill:#4a5262}
+      .corner-btn{fill:none;stroke:#4dc9d6;stroke-width:1}
+      .corner-text{font-family:monospace;font-size:8px;fill:#4dc9d6}
+      .warn{fill:#ffb347;font-family:monospace;font-size:7px}
+      .active-tile{fill:none;stroke:#ffb347;stroke-width:1.5}
+      .active-text{font-family:monospace;font-size:12px;fill:#ffb347}
+    </style>
+  </defs>
+  <rect class="bg" width="320" height="240"/>
+
+  <!-- Home corner button -->
+  <rect class="corner-btn" x="6" y="6" width="40" height="18" rx="3"/>
+  <text class="corner-text" x="26" y="19" text-anchor="middle">Home</text>
+
+  <!-- Title -->
+  <text class="title" x="160" y="20" text-anchor="middle">TRANSMIT</text>
+
+  <!-- 2x2 grid of hub tiles -->
+  <!-- Top-left: CW -->
+  <g transform="translate(14,42)">
+    <rect class="tile" x="0" y="0" width="144" height="80" rx="4"/>
+    <text class="tile-text" x="72" y="34" text-anchor="middle">CW Tone</text>
+    <text class="tile-sub" x="72" y="52" text-anchor="middle">ch 7  2442 MHz</text>
+    <text class="tile-sub" x="72" y="64" text-anchor="middle">-18 dBm</text>
+  </g>
+  <!-- Top-right: Morse (active) -->
+  <g transform="translate(162,42)">
+    <rect class="active-tile" x="0" y="0" width="144" height="80" rx="4"/>
+    <text class="active-text" x="72" y="34" text-anchor="middle">Morse CW</text>
+    <text class="tile-sub" x="72" y="52" text-anchor="middle">ch 1  2412 MHz</text>
+    <text class="warn" x="72" y="64" text-anchor="middle">20 WPM  N0CALL</text>
+  </g>
+  <!-- Bottom-left: 802.11 PKT -->
+  <g transform="translate(14,128)">
+    <rect class="tile" x="0" y="0" width="144" height="80" rx="4"/>
+    <text class="tile-text" x="72" y="34" text-anchor="middle">802.11 PKT20</text>
+    <text class="tile-sub" x="72" y="52" text-anchor="middle">ch 11</text>
+    <text class="tile-sub" x="72" y="64" text-anchor="middle">burst</text>
+  </g>
+  <!-- Bottom-right: BT Sweep -->
+  <g transform="translate(162,128)">
+    <rect class="tile" x="0" y="0" width="144" height="80" rx="4"/>
+    <text class="tile-text" x="72" y="34" text-anchor="middle">BT Sweep</text>
+    <text class="tile-sub" x="72" y="52" text-anchor="middle">0-78  100 ms</text>
+    <text class="tile-sub" x="72" y="64" text-anchor="middle">dwell</text>
+  </g>
+
+  <!-- Status footer -->
+  <text class="tile-sub" x="160" y="226" text-anchor="middle">TX cap 19.5 dBm  —  licensed amateur operation only</text>
+</svg>

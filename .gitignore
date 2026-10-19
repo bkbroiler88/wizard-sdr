@@ -7,6 +7,8 @@ build/
 *.o
 *.elf
 *.bin
+# but DO ship the pre-built, flash-at-0x0 image(s) in dist/
+!dist/*.bin
 *.map
 *.d
 # Ephemeral capture + analysis output from the HackRF/CYD calibration work

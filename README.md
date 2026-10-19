@@ -8,6 +8,52 @@ Morse CW keyer for amateur-radio operators.
 
 **No PC required at runtime.** The display is the UI.
 
+## Screens
+
+### Home
+
+![Home screen](docs/home.svg)
+
+Six tiles: Live spectrum, Tune (channel/span), Gain (manual/AGC), Trigger,
+Transmit, Settings. Everything is one tap away.
+
+### Live — SDR mode
+
+![Live SDR mode](docs/live-sdr.svg)
+
+Calibrated dBm Y-axis (default −30 to −100 dBm, user-adjustable Ref Level +
+Range), 10 dB dashed grid, three overlaid traces (live green, slow-average
+cyan, max-hold amber ridge), HackRF-style filled bins showing SNR above the
+noise floor, and a full-width scanline-batched waterfall below. The bottom
+pill strip shows AGC / averaging / peak-hold / FFT size.
+
+### Transmit hub
+
+![Transmit hub](docs/transmit.svg)
+
+Four TX modes in a 2×2 grid: CW tone (real carrier via Espressif's
+`cert_test` RF path), Morse CW keyer (5-30 WPM, PARIS-timed, call-sign
+substitution), 802.11 PKT20 burst, BT channel sweep. Transmission requires
+a configured call sign and respects the user-set TX power cap.
+
+## Install (pre-built, no toolchain)
+
+A ready-to-flash merged image is in [`dist/`](dist/):
+
+- **Classic CYD 2.8" (ESP32-2432S028R):** [`wizards-sdr-cyd28_0x0.bin`](dist/wizards-sdr-cyd28_0x0.bin)
+
+Flash at offset `0x0` with any ESP32 tool. Example with `esptool`:
+
+```bash
+esptool --chip esp32 --port COM3 write-flash 0x0 wizards-sdr-cyd28_0x0.bin
+```
+
+Or drag the file onto <https://espressif.github.io/esptool-js/> (web flasher)
+and set the offset to `0x0`.
+
+The image is built `--flash-mode dio --flash-freq 80m --flash-size 4MB` and
+includes bootloader + partitions + boot_app0 + app in one 923 KB file.
+
 ## Hardware
 
 | Board | MCU | Panel | Antenna | Env |

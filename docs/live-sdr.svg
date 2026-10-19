@@ -1,0 +1,219 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" width="640" height="480" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      .bg{fill:#0a0d12}
+      .plot-border{fill:none;stroke:#2a3140;stroke-width:0.5}
+      .axis-sep{stroke:#5a6478;stroke-width:1}
+      .label{font-family:monospace;font-size:7px;fill:#4a5262}
+      .readings{font-family:monospace;font-size:9px;fill:#7a8699}
+      .amber{fill:#ffb347}
+      .trace{fill:#5fd38a}
+      .avg{fill:#4dc9d6}
+      .dim{fill:#1d4a2b}
+      .pill-amber{fill:none;stroke:#ffb347;stroke-width:1}
+      .pill-green{fill:none;stroke:#5fd38a;stroke-width:1}
+      .pill-mid{fill:none;stroke:#4a5262;stroke-width:1}
+      .pill-text-mid{font-family:monospace;font-size:7px;fill:#7a8699}
+      .pill-text-amber{font-family:monospace;font-size:7px;fill:#ffb347}
+      .pill-text-green{font-family:monospace;font-size:7px;fill:#5fd38a}
+      .corner-btn{fill:none;stroke:#4dc9d6;stroke-width:1}
+      .corner-text{font-family:monospace;font-size:8px;fill:#4dc9d6}
+    </style>
+  </defs>
+  <!-- Background -->
+  <rect class="bg" x="0" y="0" width="320" height="240"/>
+
+  <!-- Top: Tune button + readings + HOP chip -->
+  <rect class="corner-btn" x="6" y="6" width="40" height="18" rx="3"/>
+  <text class="corner-text" x="26" y="19" text-anchor="middle">Tune</text>
+  <text class="readings" x="258" y="24" text-anchor="end">2442  AGC  -32</text>
+  <rect class="corner-btn" x="270" y="6" width="44" height="18" rx="3"/>
+  <text class="corner-text" x="292" y="19" text-anchor="middle">HOP</text>
+
+  <!-- dBm axis labels and grid (plotLeft = 28) -->
+  <text class="label" x="26" y="42" text-anchor="end">dBm</text>
+  <text class="label" x="26" y="43" text-anchor="end">-30</text>
+  <text class="label" x="26" y="58" text-anchor="end">-40</text>
+  <text class="label" x="26" y="73" text-anchor="end">-50</text>
+  <text class="label" x="26" y="88" text-anchor="end">-60</text>
+  <text class="label" x="26" y="103" text-anchor="end">-70</text>
+  <text class="label" x="26" y="118" text-anchor="end">-80</text>
+  <text class="label" x="26" y="133" text-anchor="end">-90</text>
+  <text class="label" x="26" y="148" text-anchor="end">-100</text>
+
+  <!-- Grid lines (dashed) -->
+  <g stroke="#1e2838" stroke-width="0.5" stroke-dasharray="2 4">
+    <line x1="28" y1="40" x2="314" y2="40"/>
+    <line x1="28" y1="55" x2="314" y2="55"/>
+    <line x1="28" y1="70" x2="314" y2="70"/>
+    <line x1="28" y1="85" x2="314" y2="85"/>
+    <line x1="28" y1="100" x2="314" y2="100"/>
+    <line x1="28" y1="115" x2="314" y2="115"/>
+    <line x1="28" y1="130" x2="314" y2="130"/>
+    <line x1="28" y1="145" x2="314" y2="145"/>
+  </g>
+
+  <!-- Vertical axis separator -->
+  <line class="axis-sep" x1="27" y1="40" x2="27" y2="148"/>
+
+  <!-- Plot border -->
+  <rect class="plot-border" x="27" y="39" width="288" height="110"/>
+
+  <!-- Live spectrum: WiFi carrier bump centered around x=170, noise elsewhere -->
+  <!-- Draw as bars filled from live y down to avg y (cyan line) -->
+  <!-- Noise floor sits around y=130 (-85 dBm equivalent) -->
+  <g>
+    <!-- noise bins (shorter columns) -->
+    <rect class="dim" x="30" y="128" width="2" height="4"/>
+    <rect class="dim" x="34" y="126" width="2" height="6"/>
+    <rect class="dim" x="38" y="129" width="2" height="3"/>
+    <rect class="dim" x="42" y="127" width="2" height="5"/>
+    <rect class="dim" x="46" y="128" width="2" height="4"/>
+    <rect class="dim" x="50" y="126" width="2" height="6"/>
+    <rect class="dim" x="54" y="128" width="2" height="4"/>
+    <rect class="dim" x="58" y="127" width="2" height="5"/>
+    <rect class="dim" x="62" y="129" width="2" height="3"/>
+    <rect class="dim" x="66" y="126" width="2" height="6"/>
+    <rect class="dim" x="70" y="128" width="2" height="4"/>
+    <rect class="dim" x="74" y="127" width="2" height="5"/>
+    <rect class="dim" x="78" y="129" width="2" height="3"/>
+    <rect class="dim" x="82" y="128" width="2" height="4"/>
+    <rect class="dim" x="86" y="126" width="2" height="6"/>
+    <rect class="dim" x="90" y="128" width="2" height="4"/>
+    <rect class="dim" x="94" y="127" width="2" height="5"/>
+    <rect class="dim" x="98" y="128" width="2" height="4"/>
+    <rect class="dim" x="102" y="129" width="2" height="3"/>
+    <rect class="dim" x="106" y="128" width="2" height="4"/>
+    <!-- WiFi carrier bump: tall columns at center -->
+    <rect class="dim" x="110" y="100" width="2" height="32"/>
+    <rect class="dim" x="114" y="80" width="2" height="52"/>
+    <rect class="dim" x="118" y="68" width="2" height="64"/>
+    <rect class="dim" x="122" y="58" width="2" height="74"/>
+    <rect class="dim" x="126" y="52" width="2" height="80"/>
+    <rect class="dim" x="130" y="50" width="2" height="82"/>
+    <rect class="dim" x="134" y="48" width="2" height="84"/>
+    <rect class="dim" x="138" y="46" width="2" height="86"/>
+    <rect class="dim" x="142" y="45" width="2" height="87"/>
+    <rect class="dim" x="146" y="44" width="2" height="88"/>
+    <rect class="dim" x="150" y="43" width="2" height="89"/>
+    <rect class="dim" x="154" y="44" width="2" height="88"/>
+    <rect class="dim" x="158" y="43" width="2" height="89"/>
+    <rect class="dim" x="162" y="42" width="2" height="90"/>
+    <rect class="dim" x="166" y="43" width="2" height="89"/>
+    <rect class="dim" x="170" y="44" width="2" height="88"/>
+    <rect class="dim" x="174" y="43" width="2" height="89"/>
+    <rect class="dim" x="178" y="44" width="2" height="88"/>
+    <rect class="dim" x="182" y="46" width="2" height="86"/>
+    <rect class="dim" x="186" y="48" width="2" height="84"/>
+    <rect class="dim" x="190" y="50" width="2" height="82"/>
+    <rect class="dim" x="194" y="54" width="2" height="78"/>
+    <rect class="dim" x="198" y="60" width="2" height="72"/>
+    <rect class="dim" x="202" y="68" width="2" height="64"/>
+    <rect class="dim" x="206" y="80" width="2" height="52"/>
+    <rect class="dim" x="210" y="100" width="2" height="32"/>
+    <!-- noise bins again -->
+    <rect class="dim" x="214" y="128" width="2" height="4"/>
+    <rect class="dim" x="218" y="126" width="2" height="6"/>
+    <rect class="dim" x="222" y="128" width="2" height="4"/>
+    <rect class="dim" x="226" y="127" width="2" height="5"/>
+    <rect class="dim" x="230" y="129" width="2" height="3"/>
+    <rect class="dim" x="234" y="128" width="2" height="4"/>
+    <rect class="dim" x="238" y="126" width="2" height="6"/>
+    <rect class="dim" x="242" y="128" width="2" height="4"/>
+    <rect class="dim" x="246" y="127" width="2" height="5"/>
+    <rect class="dim" x="250" y="129" width="2" height="3"/>
+    <rect class="dim" x="254" y="128" width="2" height="4"/>
+    <rect class="dim" x="258" y="126" width="2" height="6"/>
+    <rect class="dim" x="262" y="128" width="2" height="4"/>
+    <rect class="dim" x="266" y="127" width="2" height="5"/>
+    <rect class="dim" x="270" y="129" width="2" height="3"/>
+    <rect class="dim" x="274" y="128" width="2" height="4"/>
+    <rect class="dim" x="278" y="126" width="2" height="6"/>
+    <rect class="dim" x="282" y="128" width="2" height="4"/>
+    <rect class="dim" x="286" y="127" width="2" height="5"/>
+    <rect class="dim" x="290" y="129" width="2" height="3"/>
+    <rect class="dim" x="294" y="128" width="2" height="4"/>
+    <rect class="dim" x="298" y="126" width="2" height="6"/>
+    <rect class="dim" x="302" y="128" width="2" height="4"/>
+    <rect class="dim" x="306" y="127" width="2" height="5"/>
+    <rect class="dim" x="310" y="128" width="2" height="4"/>
+  </g>
+
+  <!-- Average line (cyan dots along ~y=132) -->
+  <g class="avg">
+    <rect x="30" y="132" width="2" height="1"/>
+    <rect x="42" y="132" width="2" height="1"/>
+    <rect x="54" y="132" width="2" height="1"/>
+    <rect x="66" y="132" width="2" height="1"/>
+    <rect x="78" y="132" width="2" height="1"/>
+    <rect x="90" y="132" width="2" height="1"/>
+    <rect x="102" y="132" width="2" height="1"/>
+    <rect x="110" y="131" width="2" height="1"/>
+    <rect x="130" y="80" width="2" height="1"/>
+    <rect x="150" y="60" width="2" height="1"/>
+    <rect x="170" y="55" width="2" height="1"/>
+    <rect x="190" y="68" width="2" height="1"/>
+    <rect x="210" y="110" width="2" height="1"/>
+    <rect x="222" y="132" width="2" height="1"/>
+    <rect x="234" y="132" width="2" height="1"/>
+    <rect x="246" y="132" width="2" height="1"/>
+    <rect x="258" y="132" width="2" height="1"/>
+    <rect x="270" y="132" width="2" height="1"/>
+    <rect x="282" y="132" width="2" height="1"/>
+    <rect x="294" y="132" width="2" height="1"/>
+    <rect x="306" y="132" width="2" height="1"/>
+  </g>
+
+  <!-- Peak marker: tall amber cap at bin 162 -->
+  <rect class="amber" x="162" y="40" width="2" height="4"/>
+
+  <!-- Waterfall: 36 rows × 2 px, full width 6..314 -->
+  <!-- Generate color bands showing WiFi carrier aging over time -->
+  <g>
+    <!-- Row 0 (newest, top) at y=152, Row 35 (oldest) at y=222 -->
+    <!-- Encode WiFi activity: center bins get hot colors, edges get cold -->
+    <g transform="translate(0,152)">
+      <rect x="6" y="0" width="104" height="2" fill="#1b2d44"/>
+      <rect x="110" y="0" width="4" height="2" fill="#3f54a0"/>
+      <rect x="114" y="0" width="8" height="2" fill="#5178b8"/>
+      <rect x="122" y="0" width="12" height="2" fill="#8a9b55"/>
+      <rect x="134" y="0" width="16" height="2" fill="#c4bd3d"/>
+      <rect x="150" y="0" width="24" height="2" fill="#dc8a35"/>
+      <rect x="174" y="0" width="16" height="2" fill="#c4bd3d"/>
+      <rect x="190" y="0" width="12" height="2" fill="#8a9b55"/>
+      <rect x="202" y="0" width="8" height="2" fill="#5178b8"/>
+      <rect x="210" y="0" width="4" height="2" fill="#3f54a0"/>
+      <rect x="214" y="0" width="100" height="2" fill="#1b2d44"/>
+    </g>
+    <g transform="translate(0,154)">
+      <rect x="6" y="0" width="104" height="2" fill="#1b2d44"/>
+      <rect x="110" y="0" width="4" height="2" fill="#3f54a0"/>
+      <rect x="114" y="0" width="8" height="2" fill="#5178b8"/>
+      <rect x="122" y="0" width="12" height="2" fill="#8a9b55"/>
+      <rect x="134" y="0" width="16" height="2" fill="#c4bd3d"/>
+      <rect x="150" y="0" width="24" height="2" fill="#dc8a35"/>
+      <rect x="174" y="0" width="16" height="2" fill="#c4bd3d"/>
+      <rect x="190" y="0" width="12" height="2" fill="#8a9b55"/>
+      <rect x="202" y="0" width="8" height="2" fill="#5178b8"/>
+      <rect x="210" y="0" width="4" height="2" fill="#3f54a0"/>
+      <rect x="214" y="0" width="100" height="2" fill="#1b2d44"/>
+    </g>
+    <!-- Fill remaining rows down to y=222 -->
+    <g transform="translate(0,156)" opacity="0.95"><rect x="6" y="0" width="308" height="12" fill="#1b2d44"/><rect x="130" y="0" width="60" height="12" fill="#3f54a0"/><rect x="140" y="0" width="40" height="12" fill="#5178b8"/><rect x="150" y="0" width="24" height="12" fill="#c4bd3d"/><rect x="155" y="0" width="14" height="12" fill="#dc8a35"/></g>
+    <g transform="translate(0,170)" opacity="0.9"><rect x="6" y="0" width="308" height="20" fill="#1b2d44"/><rect x="128" y="0" width="68" height="20" fill="#3f54a0"/><rect x="138" y="0" width="48" height="20" fill="#5178b8"/><rect x="148" y="0" width="28" height="20" fill="#8a9b55"/></g>
+    <g transform="translate(0,190)" opacity="0.85"><rect x="6" y="0" width="308" height="20" fill="#1b2d44"/><rect x="124" y="0" width="76" height="20" fill="#2a3e68"/><rect x="138" y="0" width="48" height="20" fill="#3f54a0"/></g>
+    <g transform="translate(0,210)" opacity="0.8"><rect x="6" y="0" width="308" height="14" fill="#1b2d44"/><rect x="120" y="0" width="84" height="14" fill="#1e2d50"/></g>
+  </g>
+
+  <!-- Pill strip: AGC | AVG | PK HOLD | FFT 128 -->
+  <g transform="translate(0,226)">
+    <rect class="pill-green" x="4" y="0" width="72" height="12" rx="3"/>
+    <text class="pill-text-green" x="40" y="9" text-anchor="middle">AGC</text>
+    <rect class="pill-mid" x="80" y="0" width="72" height="12" rx="3"/>
+    <text class="pill-text-mid" x="116" y="9" text-anchor="middle">AVG x4</text>
+    <rect class="pill-amber" x="156" y="0" width="76" height="12" rx="3"/>
+    <text class="pill-text-amber" x="194" y="9" text-anchor="middle">PK HOLD</text>
+    <rect class="pill-mid" x="236" y="0" width="80" height="12" rx="3"/>
+    <text class="pill-text-mid" x="276" y="9" text-anchor="middle">FFT 128</text>
+  </g>
+</svg>
