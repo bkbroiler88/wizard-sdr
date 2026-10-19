@@ -10,31 +10,21 @@ Morse CW keyer for amateur-radio operators.
 
 ## Screens
 
-### Home
+**Device photos coming** — if you build this and want to contribute shots of
+the real UI, open a PR or issue with any of: Home, Live (SDR mode), Transmit
+hub, Morse keyer, Settings.
 
-![Home screen](docs/home.svg)
+Until then, here's what each screen does:
 
-Six tiles: Live spectrum, Tune (channel/span), Gain (manual/AGC), Trigger,
-Transmit, Settings. Everything is one tap away.
-
-### Live — SDR mode
-
-![Live SDR mode](docs/live-sdr.svg)
-
-Calibrated dBm Y-axis (default −30 to −100 dBm, user-adjustable Ref Level +
-Range), 10 dB dashed grid, three overlaid traces (live green, slow-average
-cyan, max-hold amber ridge), HackRF-style filled bins showing SNR above the
-noise floor, and a full-width scanline-batched waterfall below. The bottom
-pill strip shows AGC / averaging / peak-hold / FFT size.
-
-### Transmit hub
-
-![Transmit hub](docs/transmit.svg)
-
-Four TX modes in a 2×2 grid: CW tone (real carrier via Espressif's
-`cert_test` RF path), Morse CW keyer (5-30 WPM, PARIS-timed, call-sign
-substitution), 802.11 PKT20 burst, BT channel sweep. Transmission requires
-a configured call sign and respects the user-set TX power cap.
+- **Home** — 6-tile launcher (Live, Tune, Gain, Trigger, Transmit, Settings).
+- **Live** — calibrated dBm Y-axis (user-adjustable Ref Level + Range), 10 dB
+  grid, three overlaid traces (live, per-bin average, max-hold), HackRF-style
+  filled bins showing SNR above the floor, and a full-width scanline-batched
+  waterfall below. Bottom pill strip: AGC / averaging / peak-hold / FFT size.
+- **Transmit** — 2×2 hub: CW Tone, Morse CW keyer (5-30 WPM with call-sign
+  presets), 802.11 PKT20 burst, BT Sweep. Requires call sign; respects TX cap.
+- **Tune / Gain / Trigger / Settings** — channel + span presets, manual-vs-AGC
+  gain, edge-triggered capture with band-gate, and the full knob set.
 
 ## Install (pre-built, no toolchain)
 
