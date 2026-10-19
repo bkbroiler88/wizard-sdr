@@ -96,6 +96,7 @@ enum class Screen : uint8_t {
     TX_MORSE,     // sub-screen: Morse CW keyer (ham-ready)
     TX_HOP,       // sub-screen: FHSS reference emitter
     SETTINGS,
+    CALL_EDIT,    // sub-screen of Settings: alphanumeric call sign editor
     _COUNT
 };
 
@@ -151,7 +152,7 @@ constexpr uint32_t kHopCycleDwellMs = 300;
 static const char* const kScreenName[] = {
     "HOME", "LIVE", "TRIGGER", "RECORD", "CAPTURES",
     "DECODING", "FINDING", "TUNE", "TRANSMIT",
-    "TX_CW", "TX_80211", "TX_MORSE", "TX_HOP", "SETTINGS",
+    "TX_CW", "TX_80211", "TX_MORSE", "TX_HOP", "SETTINGS", "CALL_EDIT",
 };
 
 // ----------------------------------------------------------------------------
@@ -1774,7 +1775,7 @@ static bool inLiveTune(int x, int y) {
 // line between Tune and the chip has room without overlap. Tap flips SPEC/HOP;
 // label shows the destination.
 constexpr int kLiveHopW = 44;
-constexpr int kLiveHopX = 320 - 6 - kLiveHopW;    // 270
+#define kLiveHopX (tft.width() - 6 - kLiveHopW)
 static void drawLiveHopChip() {
     bool hopActive = (g_liveTab == LiveTab::HOP);
     drawGlowButton(kLiveHopX, kCornerBtnY, kLiveHopW, kCornerBtnH,
@@ -1821,7 +1822,7 @@ static void tileRect(int idx, int& x, int& y, int& w, int& h) {
 
 static void drawHome() {
     tft.fillScreen(color::BG);
-    drawGlowTitle("Signalhound", tft.width() / 2, kHomeTitleY, 4);
+    drawGlowTitle("Wizards SDR", tft.width() / 2, kHomeTitleY, 4);
     for (int i = 0; i < 6; i++) {
         int x, y, w, h; tileRect(i, x, y, w, h);
         drawGlowButton(x, y, w, h, kTiles[i].label, true, 2);
@@ -1854,16 +1855,29 @@ static bool homeTouch(int tx, int ty) {
 //   40..147  plot         -- 108px tall, 128 bins = 2.5px per bin
 //   152..223 waterfall    -- 72px tall, 36 rows * 2px
 //   224..239 pill strip   -- 16px tall, 4 status chips
-constexpr int kPlotTop = 40;
-constexpr int kPlotHeight = 108;
-constexpr int kWfTop = kPlotTop + kPlotHeight + 4;    // 152
-constexpr int kWfRows = 36;
-constexpr int kWfRowH = 2;
-constexpr int kWfHeight = kWfRows * kWfRowH;          // 72
-constexpr int kPillStripTop = kWfTop + kWfHeight + 1; // 225
-constexpr int kPillStripH   = 15;
+// Vertical layout - runtime-computed from tft.height() so portrait (320)
+// and landscape (240) both use the full screen. Plot gets ~55% of the
+// available area below the title bar; the rest is waterfall + pill strip.
+// recomputeLayout() is called after any setRotation() to re-derive these.
+// kWfRowH stays fixed; kWfRows scales. g_wfRing is sized to the MAX we
+// might need (portrait = ~60 rows) so the static array fits all modes.
+constexpr int kPlotTop        = 40;
+constexpr int kWfRowH         = 2;
+constexpr int kPillStripH     = 15;
+constexpr int kWfRowsMax      = 42;      // portrait upper bound (~84 px); larger
+                                          // overflows DRAM against kFftMaxBins=256.
+int           g_plotHeight    = 108;     // runtime, set by recomputeLayout
+int           g_wfTop         = 152;
+int           g_wfRows        = 36;
+int           g_wfHeight      = 72;
+int           g_pillStripTop  = 225;
+#define kPlotHeight    g_plotHeight
+#define kWfTop         g_wfTop
+#define kWfRows        g_wfRows
+#define kWfHeight      g_wfHeight
+#define kPillStripTop  g_pillStripTop
 
-static uint8_t g_wfRing[kWfRows][kFftBins] = {};
+static uint8_t g_wfRing[kWfRowsMax][kFftBins] = {};
 static int     g_wfHead = 0;
 static int16_t g_prevY[kFftBins];       // for incremental trace draw
 static bool    g_livePrimed = false;
@@ -1878,32 +1892,64 @@ static uint32_t g_seenRetuneSeq = 0xffffffff;    // forces first-frame reset
 // + peak-hold still consume the raw max-held bins.
 static uint8_t  g_binSmooth[kFftBins] = {};
 static bool     g_binSmoothPrimed = false;
+// Slow per-bin EMA for the SDR-mode cyan "average" line. Much slower than
+// g_binSmooth; this traces the per-bin noise floor so busy bins visibly
+// ride above it. Named _ui to avoid clashing with the RF-side g_binAvg
+// (floating-point) that drives spectral averaging on Core-0.
+static uint8_t  g_binAvgUi[kFftBins] = {};
+static bool     g_binAvgUiPrimed = false;
+// SDR-mode dBm Y-axis range. Runtime-adjustable: Ref sets the top line of
+// the plot (clamp -10..-50 in steps of 5), Range sets how far below Ref the
+// bottom line sits (clamp 20..80 in steps of 10). Live-adjust in Settings
+// or via CLI (`ref <dBm>` / `range <dB>`). Persisted to NVS.
+int8_t  g_refDbm   = -30;
+uint8_t g_rangeDb  = 70;
+static inline int sdrRefDbm()  { return g_refDbm; }
+static inline int sdrMinDbm()  { return g_refDbm - (int)g_rangeDb; }
+static inline int sdrDbSpan()  { return (int)g_rangeDb; }
 // Hold decays 1 code every N frames (~60Hz → 60/N codes/sec).
 // N=2 → 30 c/s, i.e. 255→0 in ~8.5s. Feels right for a lingering peak marker.
 constexpr uint8_t kPeakHoldDecayEvery = 2;
 static uint32_t g_peakHoldTick = 0;
 
+extern uint8_t g_wfFloor;
+extern uint8_t g_wfGain;
+
 static uint16_t wfColor(uint8_t v) {
-    // 6-stop cool->hot ramp matching the mockup
+    // 6-stop cool->hot ramp matching the mockup.
+    // Signed-int interpolation so down-sloping channel deltas (B 182->61,
+    // G 180->74) don't wrap through 255 at stop boundaries.
     static const uint8_t s[6][3] = {
         {  6,  9, 26}, { 27, 42, 90}, { 45, 79,145},
         { 79,139,182}, {212,180, 61}, {227, 74, 42}
     };
-    float t = v / 255.0f;
+    // Floor subtract + gain stretch. In captured frames the "quiet" bin
+    // sits at ~130-150; without this we paint the whole screen cornflower.
+    int above = (int)v - (int)g_wfFloor;
+    if (above <= 0) return color::rgb(s[0][0], s[0][1], s[0][2]);
+    int boosted = above * (int)g_wfGain;
+    if (boosted > 255) boosted = 255;
+    float t = boosted / 255.0f;
     float x = t * 5.0f;
     int   i = (int)x; if (i > 4) i = 4;
     float f = x - i;
-    uint8_t r = s[i][0] + (uint8_t)((s[i+1][0] - s[i][0]) * f);
-    uint8_t g = s[i][1] + (uint8_t)((s[i+1][1] - s[i][1]) * f);
-    uint8_t b = s[i][2] + (uint8_t)((s[i+1][2] - s[i][2]) * f);
-    return color::rgb(r, g, b);
+    int r = (int)s[i][0] + (int)(((int)s[i+1][0] - (int)s[i][0]) * f);
+    int g = (int)s[i][1] + (int)(((int)s[i+1][1] - (int)s[i][1]) * f);
+    int b = (int)s[i][2] + (int)(((int)s[i+1][2] - (int)s[i][2]) * f);
+    if (r < 0) r = 0; else if (r > 255) r = 255;
+    if (g < 0) g = 0; else if (g > 255) g = 255;
+    if (b < 0) b = 0; else if (b > 255) b = 255;
+    return color::rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
 }
 
 static void drawLivePills();      // forward decl -- defined after drawLiveFrame
 
 static void drawLiveFrame(uint16_t ms) {
     const int w = tft.width();
-    const int plotLeft = 6, plotRight = w - 6;
+    // Reserve a 22-px gutter on the left for the dBm axis labels so the
+    // trace, waterfall and grid don't run through the digits.
+    constexpr int kAxisW = 22;
+    const int plotLeft = 6 + kAxisW, plotRight = w - 6;
     const int plotW = plotRight - plotLeft;
 
     // ---------- Readings row below the title (updated each redraw) ----------
@@ -1957,23 +2003,32 @@ static void drawLiveFrame(uint16_t ms) {
     }
     g_binSmoothPrimed = true;
 
-    // ---------- Autoscale the plot y-axis -----------------------------------
-    // Static 0..255 maps real peaks (code ~90) to about a third of the plot
-    // height, making the trace look flat. Scale to the recent peak-hold max
-    // instead, so peaks always reach near the top. Minimum floor so pure
-    // noise doesn't blow up into a full-screen rain of pixels.
-    constexpr uint8_t kScaleMin = 48;
-    uint32_t scaleDen = sceneMax;
-    if (scaleDen < kScaleMin) scaleDen = kScaleMin;
-    // 15% headroom so the top of the plot is a hair above the current peak.
-    scaleDen = (scaleDen * 115u) / 100u;
-    if (scaleDen > 255) scaleDen = 255;
+    // ---------- SDR-mode calibrated dBm Y-axis -----------------------------
+    // bin code -> dBm (same mapping as peakDbm in rfTask): dBm = -100 + v*70/255.
+    // Plot top = g_refDbm (default -30), plot bottom = g_refDbm - g_rangeDb.
+    // 10 dB grid lines are drawn once per frame after the column clears.
+    (void)sceneMax;
     auto codeToY = [&](uint8_t code) {
-        uint32_t c = code;
-        if (c > scaleDen) c = scaleDen;
+        int dbm = -100 + ((int)code * 70) / 255;
+        const int refD = sdrRefDbm();
+        const int minD = sdrMinDbm();
+        const int span = sdrDbSpan();
+        if (dbm > refD) dbm = refD;
+        if (dbm < minD) dbm = minD;
         return (int)(kPlotTop + kPlotHeight - 1
-                     - (c * (uint32_t)(kPlotHeight - 1)) / scaleDen);
+                     - ((dbm - minD) * (kPlotHeight - 1)) / span);
     };
+    // Update the per-bin slow EMA used for the cyan average line.
+    if (!g_binAvgUiPrimed) {
+        for (int i = 0; i < N; i++) g_binAvgUi[i] = g_latestFrame.bins[i];
+        g_binAvgUiPrimed = true;
+    } else {
+        for (int i = 0; i < N; i++) {
+            // weight 31/32 old + 1/32 new => ~0.5s time constant at 60 Hz
+            g_binAvgUi[i] = (uint8_t)(((uint32_t)g_binAvgUi[i] * 31
+                                      + (uint32_t)g_latestFrame.bins[i]) >> 5);
+        }
+    }
 
     // ---------- Trigger: edge-triggered + optional band gate ----------
     // Band gate: scan only the half of bins that matches g_trigBand so a
@@ -2025,43 +2080,75 @@ static void drawLiveFrame(uint16_t ms) {
         }
     }
 
-    // ---------- Spectrum trace: filled columns from baseline up ----------
-    // "Flat floor along the bottom, spikes jumping up" look. Clear the whole
-    // column, fill a dim-green band from the bottom up to y, cap the peak bin
-    // in amber. Noise bins settle as a 1-2px band at the baseline.
+    // ---------- Spectrum trace: SDR-mode 3-trace over calibrated dBm --------
+    // Each bin is drawn as a filled COLUMN (HackRF/SDR# style) from the live
+    // trace down to the per-bin average line, so column height visualizes
+    // SNR above the noise floor. Top of the column is a bright green cap
+    // (live trace). Max-hold ridge sits as a dim amber dot above the cap.
+    // Cyan dots across the floor mark the per-bin EMA; the fill is drawn
+    // BEFORE the cyan dot so it reads as "bin standing out of the floor."
     const int plotBot = kPlotTop + kPlotHeight - 1;
+    // Column width: compute from bin spacing so adjacent bins paint flush
+    // without gaps. For N=128 at plotW=286 this ends up at 2 px wide.
+    const int kBinW = (plotW >= 2 * N) ? (plotW / N) : 1;
     for (int i = 0; i < N; i++) {
         int x = plotLeft + (i * plotW) / (N - 1);
-        // Plot uses the smoothed trace to kill max-hold noise jitter;
-        // waterfall + peak-hold still consume raw max-held bins.
         uint8_t v  = g_binSmooth[i];
         uint8_t vh = g_peakHold[i];
+        uint8_t va = g_binAvgUi[i];
         int y  = codeToY(v);
         int yh = codeToY(vh);
+        int ya = codeToY(va);
+        // Clear the column (width = bin spacing).
         if (g_livePrimed) {
-            tft.drawFastVLine(x, kPlotTop, kPlotHeight, color::BG);
+            tft.fillRect(x, kPlotTop, kBinW, kPlotHeight, color::BG);
         }
-        if (y < plotBot) {
-            tft.drawFastVLine(x, y + 1, plotBot - y, color::DIM);
+        // SNR fill: dim green from top of column (live y) down to the floor
+        // (avg y). Only drawn when live rides above avg -- otherwise the
+        // bin is quiet and we leave it empty so cyan floor is visible.
+        if (y + 1 < ya) {
+            tft.fillRect(x, y + 1, kBinW, ya - y - 1, color::DIM);
         }
-        // Peak-hold marker: a dim amber pixel at the all-time high for this
-        // bin. Drawn BEFORE the trace peak so a live peak that reaches it
-        // overwrites with bright amber on top.
+        // Max-hold ridge: dim amber pixel at the all-time high.
         if (vh > v + 2 && yh < plotBot) {
             tft.drawPixel(x, yh, color::WARN_AMBER);
         }
+        // Average line: cyan dot per bin (the noise-floor trace).
+        if (ya < plotBot) {
+            tft.drawPixel(x, ya, color::rgb(77, 201, 214));
+        }
         if (i == g_latestFrame.peakBin) {
-            // Current-frame peak bin: bright amber 3-pixel column.
-            tft.drawPixel(x, y - 1, color::WARN_AMBER);
-            tft.drawPixel(x, y,     color::WARN_AMBER);
-            tft.drawPixel(x, y + 1, color::WARN_AMBER);
+            // Current-frame peak bin: bright amber cap.
+            tft.fillRect(x, y, kBinW, 2, color::WARN_AMBER);
+            if (y > kPlotTop) tft.fillRect(x, y - 1, kBinW, 1, color::WARN_AMBER);
         } else {
-            tft.drawPixel(x, y, color::TRACE);
+            tft.fillRect(x, y, kBinW, 1, color::TRACE);
         }
         g_prevY[i]     = y;
         g_prevHoldY[i] = yh;
     }
     g_livePrimed = true;
+
+    // ---------- 10 dB grid lines + Y-axis labels (dBm) ---------------------
+    // Dashed horizontal rules every 10 dB. Draw inside the plot after column
+    // clears so they survive the per-frame erase. Numbers hug the left edge.
+    for (int db = sdrRefDbm(); db >= sdrMinDbm(); db -= 10) {
+        int gy = kPlotTop + ((sdrRefDbm() - db) * (kPlotHeight - 1)) / sdrDbSpan();
+        for (int xd = plotLeft; xd < plotRight; xd += 6) {
+            int dashW = (xd + 3 > plotRight) ? (plotRight - xd) : 3;
+            if (dashW > 0) tft.drawFastHLine(xd, gy, dashW, color::rgb(30, 40, 55));
+        }
+        // dBm label right-aligned against the plot edge so "-100" fits.
+        char lbl[6];
+        snprintf(lbl, sizeof(lbl), "%d", db);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(color::DIM, color::BG);
+        tft.drawString(lbl, plotLeft - 2, gy, 1);
+    }
+
+    // Peak dBm is already shown in the existing readings strip between the
+    // Tune button and the HOP chip (see drawLiveFrame top). No duplicate
+    // MAX readout here -- it would clash with that strip and the HOP chip.
 
     // ---------- Trigger threshold line + fire flash ----------
     if (g_trigEnabled) {
@@ -2098,16 +2185,33 @@ static void drawLiveFrame(uint16_t ms) {
         s_lastPillSig = sig;
     }
 
-    // ---------- Waterfall: shift ring, paint newest row ----------
+    // ---------- Waterfall: shift ring, paint batched rows ------------------
+    // Spans the FULL display width (margin 6..width-6) -- no dBm-label gutter
+    // here since the waterfall needs no Y-axis, and leaving that strip black
+    // looked unfinished. The plot above still reserves plotLeft..plotRight.
     memcpy(g_wfRing[g_wfHead], g_latestFrame.bins, (size_t)N);
     g_wfHead = (g_wfHead + 1) % kWfRows;
-    for (int r = 0; r < kWfRows; r++) {
-        int ring = (g_wfHead + r) % kWfRows;
-        int y = kWfTop + r * kWfRowH;
-        for (int i = 0; i < N; i++) {
-            int x = plotLeft + (i * plotW) / (N - 1);
-            uint16_t c = wfColor(g_wfRing[ring][i]);
-            tft.drawFastVLine(x, y, kWfRowH, c);
+    {
+        static uint16_t s_wfLine[320];
+        const int wfLeft  = 6;
+        const int wfRight = tft.width() - 6;
+        const int lineLen = wfRight - wfLeft;
+        for (int r = 0; r < kWfRows; r++) {
+            int ring = (g_wfHead + r) % kWfRows;
+            int y = kWfTop + r * kWfRowH;
+            uint16_t binColor[kFftBins];
+            for (int i = 0; i < N; i++) binColor[i] = wfColor(g_wfRing[ring][i]);
+            for (int px = 0; px < lineLen; px++) {
+                int i = (px * (N - 1) + lineLen / 2) / lineLen;
+                if (i < 0) i = 0; else if (i >= N) i = N - 1;
+                s_wfLine[px] = binColor[i];
+            }
+            tft.startWrite();
+            tft.setAddrWindow(wfLeft, y, lineLen, kWfRowH);
+            for (int yr = 0; yr < kWfRowH; yr++) {
+                tft.pushColors(s_wfLine, lineLen);
+            }
+            tft.endWrite();
         }
     }
     (void)ms;
@@ -2158,9 +2262,13 @@ static void drawLiveHopTab();
 static void drawLiveHopTabTick();
 
 static void drawLiveSpecTab() {
-    // plot axes
-    tft.drawFastHLine(6, kPlotTop + kPlotHeight, tft.width() - 12, color::DIM);
-    tft.drawFastVLine(6, kPlotTop, kPlotHeight, color::DIM);
+    // Plot axes. Left border sits at the EDGE of the dBm-label gutter so the
+    // trace never crosses over the digits. Must match plotLeft in drawLiveFrame.
+    constexpr int kAxisW_tab = 22;
+    constexpr int kPlotLeftEdge = 6 + kAxisW_tab;
+    tft.drawFastHLine(kPlotLeftEdge, kPlotTop + kPlotHeight,
+                      tft.width() - kPlotLeftEdge - 6, color::DIM);
+    tft.drawFastVLine(kPlotLeftEdge - 1, kPlotTop, kPlotHeight, color::MID);
     // waterfall border
     tft.drawRect(5, kWfTop - 1, tft.width() - 10, kWfHeight + 2, color::DIM);
     // bottom status pills
@@ -2309,7 +2417,7 @@ static uint16_t hopColForBtCh(int /*bt*/) {
 // --- Usage bar: per-column dirty redraw --------------------------------
 static void hopDrawUsageBar(const HopClass& cls) {
     const int baseY = kHopUsageY + kHopUsageH - 2;
-    const int W = 320 - 2 * kHopMargin;
+    const int W = tft.width() - 2 * kHopMargin;
     for (int bt = 0; bt < 79; bt++) {
         // ADV mode: zero out off-target channels so we never paint them.
         // Dirty check still fires so any previously-painted bar gets
@@ -2336,7 +2444,7 @@ static void hopDrawUsageBar(const HopClass& cls) {
 // --- Scatter strip: scrolling ring, per-column dirty redraw ------------
 static void hopDrawScatter() {
     const int sxL = kHopMargin + 1;
-    const int sxR = 320 - kHopMargin - 1;
+    const int sxR = tft.width() - kHopMargin - 1;
     const int sxW = sxR - sxL;
     const int syT = kHopScatterY + 7;
     const int syB = kHopScatterY + kHopScatterH - 3;
@@ -2487,7 +2595,7 @@ static void hopDrawClassifier(const HopClass& cls) {
         if (strcmp(sub, g_hopClassSubCache[row]) != 0) {
             strncpy(g_hopClassSubCache[row], sub, sizeof(g_hopClassSubCache[0]) - 1);
             g_hopClassSubCache[row][sizeof(g_hopClassSubCache[0]) - 1] = 0;
-            tft.fillRect(180, lineY - 8, 320 - 180 - 4, 16, color::BG);
+            tft.fillRect(180, lineY - 8, tft.width() - 180 - 4, 16, color::BG);
             tft.setTextDatum(ML_DATUM);
             tft.setTextColor(color::MID, color::BG);
             tft.drawString(sub, 180, lineY, 2);
@@ -2642,11 +2750,11 @@ static void drawLiveHopTab() {
     tft.setTextColor(color::DIM, color::BG);
     tft.drawString("usage 2s", kHopMargin, kHopUsageY, 1);
     const int baseY = kHopUsageY + kHopUsageH - 2;
-    tft.drawFastHLine(kHopMargin, baseY + 1, 320 - 2 * kHopMargin, color::DIM);
+    tft.drawFastHLine(kHopMargin, baseY + 1, tft.width() - 2 * kHopMargin, color::DIM);
     // Visible-band bracket: dim outline on the usage bar showing which BT
     // channels the current tune actually covers (16/40/80 MHz span).
     int vLo, vHi; hopVisibleBtRange(vLo, vHi);
-    const int W = 320 - 2 * kHopMargin;
+    const int W = tft.width() - 2 * kHopMargin;
     int bx0 = kHopMargin + (vLo * W) / 79;
     int bx1 = kHopMargin + ((vHi + 1) * W) / 79;
     tft.drawRect(bx0, kHopUsageY + 10, bx1 - bx0, kHopUsageH - 12, color::DIM);
@@ -2656,12 +2764,12 @@ static void drawLiveHopTab() {
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(color::DIM, color::BG);
     tft.drawString("time -> now  5s", kHopMargin, kHopScatterY + 3, 1);
-    tft.drawRect(kHopMargin, kHopScatterY + 6, 320 - 2 * kHopMargin,
+    tft.drawRect(kHopMargin, kHopScatterY + 6, tft.width() - 2 * kHopMargin,
                  kHopScatterH - 8, color::DIM);
 
     // Section 3 divider
     tft.fillRect(0, kHopClassY - 2, 320, kHopClassH + 2, color::BG);
-    tft.drawFastHLine(kHopMargin, kHopClassY - 2, 320 - 2 * kHopMargin, color::DIM);
+    tft.drawFastHLine(kHopMargin, kHopClassY - 2, tft.width() - 2 * kHopMargin, color::DIM);
 
     // Reset dirty caches so the next paint fills every live cell from BG.
     memset(g_hopUsageLastH,    0, sizeof(g_hopUsageLastH));
@@ -2872,7 +2980,7 @@ constexpr int kAvgRowY     = 192, kAvgRowH   = 22;
 static void gainAdjRects(int& xM10, int& xM1, int& xV, int& xP1, int& xP10,
                          int& wStep, int& wVal, int& h) {
     const int gap = 6;
-    const int left = kGainMargin, right = 320 - kGainMargin;
+    const int left = kGainMargin, right = tft.width() - kGainMargin;
     const int totalW = right - left;
     wStep = 48;
     wVal  = totalW - 4 * (wStep + gap);
@@ -2887,7 +2995,7 @@ static void gainAdjRects(int& xM10, int& xM1, int& xV, int& xP1, int& xP10,
 static void drawGainTabContent() {
     // --- AGC toggle (full-width glow button) ---
     {
-        const int x = kGainMargin, w = 320 - 2 * kGainMargin;
+        const int x = kGainMargin, w = tft.width() - 2 * kGainMargin;
         drawGlowButton(x, kAgcY, w, kAgcH, "", true, 2);
         char label[32];
         snprintf(label, sizeof(label),
@@ -2920,7 +3028,7 @@ static void drawGainTabContent() {
     // --- Bar visualization: scaled 0..gain_max across the whole content width
     const uint8_t gmax = espSdrGainMax() ? espSdrGainMax() : 72;
     const int barX = kGainMargin + kBarPadX;
-    const int barW = 320 - 2 * (kGainMargin + kBarPadX);
+    const int barW = tft.width() - 2 * (kGainMargin + kBarPadX);
     tft.drawRect(barX, kBarY, barW, kBarH, manActive ? color::MID : color::DIM);
     const int filled = (int)((g_appliedGain * (uint32_t)(barW - 2)) / (uint32_t)gmax);
     if (manActive && filled > 0) {
@@ -2968,7 +3076,7 @@ static void drawGainTabContent() {
 }
 
 static bool gainTabTouch(int tx, int ty) {
-    const int wAgc = 320 - 2 * kGainMargin;
+    const int wAgc = tft.width() - 2 * kGainMargin;
     if (tx >= kGainMargin && tx < kGainMargin + wAgc
         && ty >= kAgcY && ty < kAgcY + kAgcH) {
         g_wantAgc = !g_appliedAgc;
@@ -3034,7 +3142,7 @@ static bool gainTabTouch(int tx, int ty) {
 // ----------------------------------------------------------------------------
 constexpr int kTuneTabLeft = kCornerBtnX + kCornerBtnW + 8;    // 84
 constexpr int kTuneTabGap  = 4;
-constexpr int kTuneTabW    = (320 - kTuneTabLeft - 10 - kTuneTabGap) / 2;  // 112
+#define kTuneTabW ((tft.width() - kTuneTabLeft - 10 - kTuneTabGap) / 2)
 constexpr int kTuneTabY    = kCornerBtnY;
 constexpr int kTuneTabH    = kCornerBtnH;
 
@@ -3086,7 +3194,7 @@ constexpr int kTrigStatY    = 190;
 static void trigAdjRects(int& xM10, int& xM1, int& xV, int& xP1, int& xP10,
                          int& wStep, int& wVal, int& h) {
     const int gap = 6;
-    const int left = kTrigMargin, right = 320 - kTrigMargin;
+    const int left = kTrigMargin, right = tft.width() - kTrigMargin;
     const int totalW = right - left;
     wStep = 48;
     wVal  = totalW - 4 * (wStep + gap);
@@ -3135,7 +3243,7 @@ static bool inTrigTabBar(int tx, int ty, TrigTab& which) {
 // -----------------------------------------------------------------------------
 static void drawTrigCfgTab() {
     // Enable toggle (full-width)
-    const int x = kTrigMargin, w = 320 - 2 * kTrigMargin;
+    const int x = kTrigMargin, w = tft.width() - 2 * kTrigMargin;
     drawGlowButton(x, kTrigEnableY, w, kTrigEnableH, "", true, 2);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(g_trigEnabled ? color::OK_GREEN : color::DIM, color::BG);
@@ -3162,7 +3270,7 @@ static void drawTrigCfgTab() {
 
     // Position bar 0..255
     const int barX = kTrigMargin + 20;
-    const int barW = 320 - 2 * (kTrigMargin + 20);
+    const int barW = tft.width() - 2 * (kTrigMargin + 20);
     tft.drawRect(barX, kTrigBarY, barW, kTrigBarH, color::MID);
     int filled = (g_trigThreshold * (barW - 2)) / 255;
     if (filled > 0) tft.fillRect(barX + 1, kTrigBarY + 1, filled, kTrigBarH - 2,
@@ -3185,7 +3293,7 @@ static void drawTrigCfgTab() {
     // Band-gate selector: label row + three chips.
     const int bandLabelY = 194;
     const int bandRowY   = 212, bandRowH = 24;
-    const int bandLeft = kTrigMargin, bandRight = 320 - kTrigMargin;
+    const int bandLeft = kTrigMargin, bandRight = tft.width() - kTrigMargin;
     const int bandGap  = 6;
     const int bandW    = (bandRight - bandLeft - 2 * bandGap) / 3;
     tft.setTextDatum(ML_DATUM);
@@ -3203,7 +3311,7 @@ static void drawTrigCfgTab() {
 
 static bool trigCfgTouch(int tx, int ty) {
     // Enable toggle
-    const int w = 320 - 2 * kTrigMargin;
+    const int w = tft.width() - 2 * kTrigMargin;
     if (tx >= kTrigMargin && tx < kTrigMargin + w
         && ty >= kTrigEnableY && ty < kTrigEnableY + kTrigEnableH) {
         g_trigEnabled = !g_trigEnabled;
@@ -3219,7 +3327,7 @@ static bool trigCfgTouch(int tx, int ty) {
     // Band selector row (matches drawTrigCfgTab layout)
     {
         const int bandRowY = 212, bandRowH = 24;
-        const int bandLeft = kTrigMargin, bandRight = 320 - kTrigMargin;
+        const int bandLeft = kTrigMargin, bandRight = tft.width() - kTrigMargin;
         const int bandGap  = 6;
         const int bandW    = (bandRight - bandLeft - 2 * bandGap) / 3;
         const TrigBand vals[3] = { TrigBand::ALL, TrigBand::LEFT, TrigBand::RIGHT };
@@ -3262,7 +3370,7 @@ constexpr int kRecClearY = 192, kRecClearH = 36;
 
 static void drawTrigRecTab() {
     // Record toggle
-    const int x = kTrigMargin, w = 320 - 2 * kTrigMargin;
+    const int x = kTrigMargin, w = tft.width() - 2 * kTrigMargin;
     drawGlowButton(x, kRecRecY, w, kRecRecH, "", true, 2);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(g_recordOn ? color::OK_GREEN : color::DIM, color::BG);
@@ -3306,7 +3414,7 @@ static void drawTrigRecTab() {
 }
 
 static bool trigRecTouch(int tx, int ty) {
-    const int x = kTrigMargin, w = 320 - 2 * kTrigMargin;
+    const int x = kTrigMargin, w = tft.width() - 2 * kTrigMargin;
     if (tx < x || tx >= x + w) return false;
     // Record toggle
     if (ty >= kRecRecY && ty < kRecRecY + kRecRecH) {
@@ -3376,7 +3484,7 @@ static uint16_t capFreqMhz(const CaptureEvent* ev) {
 static void drawTrigCapsTab() {
     const int left   = kTrigMargin;
     const int rowsN  = capRowsVisible();
-    const int listRt = 320 - kTrigMargin - kCapScrollW;
+    const int listRt = tft.width() - kTrigMargin - kCapScrollW;
     const int listW  = listRt - left;
 
     if (g_capCount == 0) {
@@ -3437,7 +3545,7 @@ static void drawTrigCapsTab() {
     }
 
     // Scroll strip (up/down buttons)
-    const int sbX = 320 - kTrigMargin - kCapScrollW;
+    const int sbX = tft.width() - kTrigMargin - kCapScrollW;
     const int upY = kCapListTop;
     const int dnY = kCapListBot - kCapScrollW;
     drawGlowButton(sbX, upY, kCapScrollW, kCapScrollW, "+", true, 4);
@@ -3457,7 +3565,7 @@ static void drawTrigCapsTab() {
 }
 
 static bool trigCapsTouch(int tx, int ty) {
-    const int sbX = 320 - kTrigMargin - kCapScrollW;
+    const int sbX = tft.width() - kTrigMargin - kCapScrollW;
     if (tx >= sbX && tx < sbX + kCapScrollW) {
         int rowsN = capRowsVisible();
         int maxScroll = g_capCount - rowsN; if (maxScroll < 0) maxScroll = 0;
@@ -3546,12 +3654,12 @@ static void drawTxModeTab() {
     // On the sub-screens the kind is fixed (TX_CW -> tone, TX_80211 -> 802.11)
     // so we show a single read-only label instead of the KIND selector.
     const int gap = 6;
-    const int kw = (320 - 2 * kTxMargin - gap) / 2;
+    const int kw = (tft.width() - 2 * kTxMargin - gap) / 2;
     if (g_screen == Screen::TX_CW) {
-        drawGlowButton(kTxMargin, kTxKindY, 320 - 2 * kTxMargin, kTxKindH,
+        drawGlowButton(kTxMargin, kTxKindY, tft.width() - 2 * kTxMargin, kTxKindH,
                        "CW / SWEEP", true, 2);
     } else if (g_screen == Screen::TX_80211) {
-        drawGlowButton(kTxMargin, kTxKindY, 320 - 2 * kTxMargin, kTxKindH,
+        drawGlowButton(kTxMargin, kTxKindY, tft.width() - 2 * kTxMargin, kTxKindH,
                        "802.11 BEACON", true, 2);
     } else {
         // Legacy TRANSMIT (hub) rendering fallback -- shouldn't be hit.
@@ -3562,7 +3670,7 @@ static void drawTxModeTab() {
     }
 
     // Big START/STOP toggle button
-    const int fx = kTxMargin, fw = 320 - 2 * kTxMargin;
+    const int fx = kTxMargin, fw = tft.width() - 2 * kTxMargin;
     drawGlowButton(fx, kTxFireY, fw, kTxFireH, "", true, 2);
     tft.setTextDatum(MC_DATUM);
     const bool live = g_txRunning;
@@ -3611,7 +3719,7 @@ static bool txModeTouch(int tx, int ty) {
     if (g_screen != Screen::TX_CW && g_screen != Screen::TX_80211 &&
         ty >= kTxKindY && ty < kTxKindY + kTxKindH) {
         const int gap = 6;
-        const int kw = (320 - 2 * kTxMargin - gap) / 2;
+        const int kw = (tft.width() - 2 * kTxMargin - gap) / 2;
         if (tx >= kTxMargin && tx < kTxMargin + kw) {
             g_toneSel = false; return true;
         }
@@ -3621,7 +3729,7 @@ static bool txModeTouch(int tx, int ty) {
     }
     // START / STOP toggle
     if (ty >= kTxFireY && ty < kTxFireY + kTxFireH
-        && tx >= kTxMargin && tx < 320 - kTxMargin) {
+        && tx >= kTxMargin && tx < tft.width() - kTxMargin) {
         if (g_toneSel) {
             // Post a start/stop request -- loop() does the heavy phy init
             // so this touch handler returns immediately (no WDT trip).
@@ -3669,7 +3777,7 @@ constexpr int kTxBtFreqY      = 44, kTxBtFreqH   = 26;
 constexpr int kTxBtSliderY    = 76, kTxBtSliderH = 44;
 constexpr int kTxBtBtnW       = 40;
 constexpr int kTxBtMinusX     = kTxMargin;
-constexpr int kTxBtPlusX      = 320 - kTxMargin - kTxBtBtnW;
+#define kTxBtPlusX (tft.width() - kTxMargin - kTxBtBtnW)
 constexpr int kTxTuneDurY2    = 128, kTxTuneDurH2   = 22;
 constexpr int kTxTunePaceY2   = 158, kTxTunePaceH2  = 22;
 constexpr int kTxTuneDwellY   = 188, kTxTuneDwellH  = 22;
@@ -3678,13 +3786,13 @@ constexpr int kTxTuneDwellY   = 188, kTxTuneDwellH  = 22;
 constexpr int kTxSweepDwellY  = 214, kTxSweepDwellH = 22;
 constexpr int kTxDwBtnW       = 36;
 constexpr int kTxDwMinusX     = kTxMargin;
-constexpr int kTxDwPlusX      = 320 - kTxMargin - kTxDwBtnW;
+#define kTxDwPlusX (tft.width() - kTxMargin - kTxDwBtnW)
 
 // Channel tile layout: 2 rows x 7 cols (14 slots, use 1-13).
 static void txChTileRect(int ch, int& x, int& y, int& w, int& h) {
     const int cols = 7;
     const int gap  = 4;
-    const int availW = 320 - 2 * kTxMargin;
+    const int availW = tft.width() - 2 * kTxMargin;
     w = (availW - (cols - 1) * gap) / cols;
     h = kTxTuneChRowH;
     int idx = ch - 1;
@@ -3728,7 +3836,7 @@ static void drawTxTuneTab() {
         // fall through to chip rows below (Mode/PA/Pattern/Dwell)
     } else {
         // --- HOP preset button (full-width). Tap to cycle through presets. ---
-        const int hopX = kTxMargin, hopW = 320 - 2 * kTxMargin;
+        const int hopX = kTxMargin, hopW = tft.width() - 2 * kTxMargin;
         char hopLbl[48];
         const char* base = kHopPresetLbl[g_cwHopPreset];
         if (g_cwHopPreset == HOP_CUSTOM) {
@@ -3766,7 +3874,7 @@ static void drawTxTuneTab() {
         tft.setTextDatum(ML_DATUM);
         tft.setTextColor(color::MID, color::BG);
         tft.drawString(label, kTxMargin, rowY + rowH / 2, 2);
-        const int chipLeft = 60, chipRight = 320 - 6;
+        const int chipLeft = 60, chipRight = tft.width() - 6;
         const int chipGap  = 6;
         const int chipW    = (chipRight - chipLeft - (n - 1) * chipGap) / n;
         for (int i = 0; i < n; i++) {
@@ -3878,7 +3986,7 @@ static bool txTuneTouch(int tx, int ty) {
     } else {
         // HOP preset button: tap cycles through OFF / Custom / 1,6,11 / All / BLE / Video.
         if (ty >= kTxTuneHopY && ty < kTxTuneHopY + kTxTuneHopH
-            && tx >= kTxMargin && tx < 320 - kTxMargin) {
+            && tx >= kTxMargin && tx < tft.width() - kTxMargin) {
             uint8_t next = (uint8_t)((g_cwHopPreset + 1) % HOP_PRESET_COUNT);
             applyHopPreset(next);
             return true;
@@ -3900,7 +4008,7 @@ static bool txTuneTouch(int tx, int ty) {
         }
     }
     // Chip-row hitboxes (share same geometry as drawChipRow)
-    const int chipLeft = 60, chipRight = 320 - 6;
+    const int chipLeft = 60, chipRight = tft.width() - 6;
     const int chipGap  = 6;
     const int chipW    = (chipRight - chipLeft - 3 * chipGap) / 4;
     auto hitRow = [&](int rowY, int rowH, const uint16_t* vals,
@@ -4026,7 +4134,7 @@ static bool txTuneTouch(int tx, int ty) {
 constexpr int kHubTop     = 44;
 constexpr int kHubGap     = 8;
 constexpr int kHubBtnH    = 84;
-constexpr int kHubBtnW    = (320 - 2 * kTxMargin - kHubGap) / 2;
+#define kHubBtnW ((tft.width() - 2 * kTxMargin - kHubGap) / 2)
 constexpr int kHubRow2    = kHubTop + kHubBtnH + kHubGap;
 
 // Tile color per TX mode: green = benign CW, amber = ham-licensed Morse,
@@ -4169,9 +4277,30 @@ static bool transmitTouch(int tx, int ty) { return txHubTouch(tx, ty); }
 static uint8_t  g_morseWpm      = 15;        // 5..30
 static uint8_t  g_morseChan     = 1;         // WiFi 1..14
 static uint8_t  g_morseLastSent = 0;         // index 0..3
-// Operator's call sign in NVS. Empty = use the placeholder. Set via CLI
-// `callsign <STR>` -- the Morse presets below substitute this live.
+// Operator's call sign in NVS. Empty = use the placeholder. The on-device
+// editor (Settings -> tap Call sign row) and the `callsign <STR>` CLI both
+// write here; Morse presets substitute it live.
 char            g_callsign[12]  = "";
+// Max TX power in 0.25 dB units, clamped to phy_init_data's LIMIT range
+// 40..78 (= 10 .. 19.5 dBm). Settings has a -/+ adjuster that applies the
+// value live via esp_wifi_set_max_tx_power() and persists it in NVS.
+uint8_t         g_txPowerCap    = 78;
+// Waterfall contrast knobs. `g_wfFloor` is subtracted from each bin BEFORE
+// mapping to the color ramp (kills the solid cornflower-blue carpet that
+// otherwise comes from the ~130 avg noise floor at ch 1-14). `g_wfGain` then
+// multiplies what remains, stretching the useful range across the ramp. Both
+// are user-adjustable in Settings and persist in NVS. Defaults chosen from
+// serial-captured frames: avg ~130-150, max ~220-255 at 2442 MHz.
+uint8_t         g_wfFloor       = 120;      // 0..220
+uint8_t         g_wfGain        = 2;        // 1..6
+// Display orientation + inversion. Rotation 0..3 maps to TFT_eSPI's
+// setRotation (0=portrait, 1=landscape, 2=portrait-flip, 3=landscape-flip).
+// Invert flips the LCD polarity (certain CYD panels need this). Both are
+// applied at boot and whenever changed via CLI / Settings; a rotation change
+// requires touch recal (the raw<->screen map is rotation-specific), which
+// the CLI command flags with a warning.
+uint8_t         g_rotation      = 1;
+uint8_t         g_invertOn      = 0;        // 0 or 1
 // Static templates; "{CALL}" is replaced with g_callsign (or N0CALL
 // placeholder) when the user picks a preset in morseExpandPreset().
 static const char* kMorsePresetTemplates[4] = {
@@ -4331,121 +4460,460 @@ static bool hopTouch(int /*tx*/, int /*ty*/) { return false; }
 // SETTINGS screen: brightness + touch recal + factory reset.
 // ----------------------------------------------------------------------------
 constexpr int kSetMargin   = 10;
-constexpr int kBrightLabelY = 44;
-constexpr int kBrightBarY   = 60, kBrightBarH = 24;
-constexpr int kBrightMinusX = 10,  kBrightPlusX  = 268;
-constexpr int kBrightBtnW   = 44,  kBrightBtnH   = 24;
-constexpr int kRecalY       = 108, kRecalH       = 36;
-constexpr int kResetY       = 156, kResetH       = 36;
+// Settings page -- rows of status / value, then a bottom pill row of
+// irreversible actions. Rows are 20px tall at Y 44..184; pill row Y 196.
+constexpr int kSetRowTop    = 44;
+constexpr int kSetRowH      = 18;
+constexpr int kSetRowGap    = 2;
+constexpr int kSetValueR    = 310;         // right edge for value text
+constexpr int kSetPillY     = 206;
+constexpr int kSetPillH     = 30;
+// Brightness nudger on-row:
+constexpr int kBrightMinusX = 196, kBrightPlusX = 268;
+constexpr int kBrightBtnW   = 32,  kBrightBtnH  = 20;
+// Legacy constants kept so other refs compile; map to the new pill geometry.
+constexpr int kBrightLabelY = kSetRowTop + 0 * (kSetRowH + kSetRowGap);
+constexpr int kBrightBarY   = kBrightLabelY;
+constexpr int kRecalY       = kSetPillY, kRecalH = kSetPillH;
+constexpr int kResetY       = kSetPillY, kResetH = kSetPillH;
 
 static uint8_t g_resetArm = 0;      // 0 idle, 1 "tap again to confirm"
+
+// Draw one status row: left-aligned label, right-aligned value.
+static int settingsRowY(int idx) {
+    return kSetRowTop + idx * (kSetRowH + kSetRowGap) + kSetRowH / 2;
+}
+static void drawSetRow(int idx, const char* label, const char* value,
+                       uint16_t valueColor) {
+    int y = settingsRowY(idx);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color::MID, color::BG);
+    tft.drawString(label, kSetMargin, y, 2);
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(valueColor, color::BG);
+    tft.drawString(value, kSetValueR, y, 2);
+}
 
 static void drawSettingsScreen() {
     tft.fillScreen(color::BG);
     drawCornerHome();
     drawGlowTitle("SETTINGS", tft.width() / 2, 20, 4);
 
-    // --- Brightness label + bar + nudgers ---
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(color::MID, color::BG);
-    char blab[24];
-    snprintf(blab, sizeof(blab), "Brightness  %u", (unsigned)g_brightness);
-    tft.drawString(blab, kSetMargin, kBrightLabelY + 6, 2);
+    char buf[32];
+    auto drawNudgerRow = [&](int rowIdx, const char* label, const char* value) {
+        int y = settingsRowY(rowIdx);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(color::MID, color::BG);
+        tft.drawString(label, kSetMargin, y, 2);
+        int btnY = y - kBrightBtnH / 2;
+        drawGlowButton(kBrightMinusX, btnY, kBrightBtnW, kBrightBtnH, "-", true, 1);
+        drawGlowButton(kBrightPlusX,  btnY, kBrightBtnW, kBrightBtnH, "+", true, 1);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(color::BRIGHT, color::BG);
+        tft.drawString(value,
+                       (kBrightMinusX + kBrightPlusX + kBrightBtnW) / 2, y, 2);
+    };
 
-    drawGlowButton(kBrightMinusX, kBrightBarY, kBrightBtnW, kBrightBtnH, "-", true, 4);
-    drawGlowButton(kBrightPlusX,  kBrightBarY, kBrightBtnW, kBrightBtnH, "+", true, 4);
-    const int barX = kBrightMinusX + kBrightBtnW + 8;
-    const int barR = kBrightPlusX - 8;
-    const int barW = barR - barX;
-    tft.drawRect(barX, kBrightBarY + 6, barW, kBrightBtnH - 12, color::MID);
-    int filled = (g_brightness * (barW - 2)) / 255;
-    if (filled > 0) tft.fillRect(barX + 1, kBrightBarY + 7,
-                                 filled, kBrightBtnH - 14, color::BRIGHT);
+    // --- Adjustable rows ---
+    // Row 0: Call sign (tap row to open editor)
+    {
+        int y = settingsRowY(0);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(color::MID, color::BG);
+        tft.drawString("Call sign", kSetMargin, y, 2);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(g_callsign[0] ? color::OK_GREEN : color::WARN_AMBER,
+                         color::BG);
+        tft.drawString(g_callsign[0] ? g_callsign : "tap to set",
+                       kSetValueR, y, 2);
+    }
 
-    // --- Touch Recalibrate ---
-    drawGlowButton(kSetMargin, kRecalY,
-                   320 - 2 * kSetMargin, kRecalH, "Touch Recalibrate", true, 2);
+    // Row 1: Morse WPM default
+    snprintf(buf, sizeof(buf), "%u", (unsigned)g_morseWpm);
+    drawNudgerRow(1, "Morse WPM", buf);
 
-    // --- Factory Reset (two-tap confirm) ---
-    drawGlowButton(kSetMargin, kResetY,
-                   320 - 2 * kSetMargin, kResetH,
-                   g_resetArm ? "TAP AGAIN TO CONFIRM" : "Factory Reset",
-                   true, 2);
+    // Row 2: Brightness
+    snprintf(buf, sizeof(buf), "%u%%", (g_brightness * 100) / 255);
+    drawNudgerRow(2, "Brightness", buf);
+
+    // Row 3: TX power cap. Format is tight -- unit goes in the label.
+    // Half-dB resolution display (19.5 fits in 4 chars max).
+    snprintf(buf, sizeof(buf), "%.1f", g_txPowerCap * 0.25f);
+    drawNudgerRow(3, "TX cap  dBm", buf);
+
+    // Row 4: Waterfall floor (subtract before mapping). Step by 10.
+    snprintf(buf, sizeof(buf), "%u", (unsigned)g_wfFloor);
+    drawNudgerRow(4, "WF Floor", buf);
+
+    // Row 5: Waterfall gain (multiplier after subtract). Step by 1.
+    snprintf(buf, sizeof(buf), "x%u", (unsigned)g_wfGain);
+    drawNudgerRow(5, "WF Gain", buf);
+
+    // Row 6: SDR Ref Level (top of plot in dBm). Step 5 dB, clamp -10..-50.
+    snprintf(buf, sizeof(buf), "%d dBm", (int)g_refDbm);
+    drawNudgerRow(6, "Ref Level", buf);
+
+    // Row 7: SDR Range (how many dB the plot shows). Step 10, clamp 20..80.
+    snprintf(buf, sizeof(buf), "%u dB", (unsigned)g_rangeDb);
+    drawNudgerRow(7, "Range", buf);
+
+    // --- Bottom pill row: Rot | Inv | Recal | Reset ---
+    // 4 compact action pills. Rot label shows current rotation digit; Inv
+    // shows on/off; Recal clears cal + reboots; Reset is 2-tap armed.
+    const int pillGap = 6;
+    const int pillW   = (tft.width() - 2 * kSetMargin - 3 * pillGap) / 4;
+    const int px0 = kSetMargin;
+    const int px1 = px0 + pillW + pillGap;
+    const int px2 = px1 + pillW + pillGap;
+    const int px3 = px2 + pillW + pillGap;
+    char rotLbl[12];
+    snprintf(rotLbl, sizeof(rotLbl), "Rot %u", (unsigned)(g_rotation & 3));
+    drawGlowButton(px0, kSetPillY, pillW, kSetPillH, rotLbl, true, 2);
+    drawGlowButton(px1, kSetPillY, pillW, kSetPillH,
+                   g_invertOn ? "Inv on" : "Inv off", g_invertOn ? true : false, 2);
+    drawGlowButton(px2, kSetPillY, pillW, kSetPillH, "Recal", true, 2);
+    drawGlowButton(px3, kSetPillY, pillW, kSetPillH,
+                   g_resetArm ? "Sure?" : "Reset", true, 2);
     if (g_resetArm) {
-        // Overlay red-ish text so the armed state reads as a warning.
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(color::WARN_AMBER, color::BG);
-        tft.drawString("TAP AGAIN TO CONFIRM",
-                       tft.width() / 2, kResetY + kResetH / 2, 2);
+        tft.drawString("Sure?", px3 + pillW / 2,
+                       kSetPillY + kSetPillH / 2, 2);
     }
-
-    // --- Ham call sign readout (CLI-set via `callsign <STR>`) ---
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(color::MID, color::BG);
-    tft.drawString("Call sign:", kSetMargin, 200, 2);
-    tft.setTextDatum(MR_DATUM);
-    tft.setTextColor(g_callsign[0] ? color::OK_GREEN : color::WARN_AMBER,
-                     color::BG);
-    tft.drawString(g_callsign[0] ? g_callsign : "N0CALL (set via CLI)",
-                   320 - kSetMargin, 200, 2);
-
-    // Footer hint
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(color::DIM, color::BG);
-    tft.drawString("CLI: `callsign K1XYZ` to set", tft.width() / 2, 220, 1);
-    tft.drawString("Reset clears all settings and reboots",
-                   tft.width() / 2, 232, 1);
 }
 
+// Forward decl for the call-sign editor sub-screen (defined below Settings).
+static void enterCallsignEditor();
+
 static bool settingsTouch(int tx, int ty) {
-    // Brightness nudgers
-    if (ty >= kBrightBarY && ty < kBrightBarY + kBrightBtnH) {
-        if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) {
-            int next = (int)g_brightness - 16;
-            if (next < 16) next = 16;         // keep screen readable
-            setBrightness((uint8_t)next);
+    // Row 0: Call sign row -- tap anywhere on the row opens the editor
+    {
+        int rowY = settingsRowY(0);
+        if (ty >= rowY - kSetRowH / 2 && ty < rowY + kSetRowH / 2) {
+            enterCallsignEditor();
+            return true;
+        }
+    }
+    // Row 1: Morse WPM nudgers (5..30 range)
+    {
+        int rowY = settingsRowY(1);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) {
+                if (g_morseWpm > 5) g_morseWpm--;
+                g_resetArm = 0;
+                g_cfgDirty = true;
+                return true;
+            }
+            if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) {
+                if (g_morseWpm < 30) g_morseWpm++;
+                g_resetArm = 0;
+                g_cfgDirty = true;
+                return true;
+            }
+        }
+    }
+    // Row 2: Brightness nudgers
+    {
+        int rowY = settingsRowY(2);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) {
+                int next = (int)g_brightness - 16;
+                if (next < 16) next = 16;
+                setBrightness((uint8_t)next);
+                g_resetArm = 0;
+                return true;
+            }
+            if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) {
+                int next = (int)g_brightness + 16;
+                if (next > 255) next = 255;
+                setBrightness((uint8_t)next);
+                g_resetArm = 0;
+                return true;
+            }
+        }
+    }
+    // Row 3: TX power cap -- step by 4 (= 1 dB) per press, clamp 40..78.
+    {
+        int rowY = settingsRowY(3);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            int next = g_txPowerCap;
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) next -= 4;
+            else if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) next += 4;
+            else goto no_txcap;
+            if (next < 40) next = 40;
+            if (next > 78) next = 78;
+            if (next != g_txPowerCap) {
+                g_txPowerCap = (uint8_t)next;
+                esp_err_t e = esp_wifi_set_max_tx_power((int8_t)g_txPowerCap);
+                Serial.printf("[sh] tx cap -> %u (%.2f dBm) rc=%d\n",
+                              (unsigned)g_txPowerCap, g_txPowerCap * 0.25f, (int)e);
+                g_cfgDirty = true;
+            }
             g_resetArm = 0;
             return true;
         }
-        if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) {
-            int next = (int)g_brightness + 16;
-            if (next > 255) next = 255;
-            setBrightness((uint8_t)next);
+      no_txcap:;
+    }
+    // Row 4: WF Floor -- step by 10, clamp 0..220.
+    {
+        int rowY = settingsRowY(4);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            int next = g_wfFloor;
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) next -= 10;
+            else if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) next += 10;
+            else goto no_wffloor;
+            if (next < 0) next = 0;
+            if (next > 220) next = 220;
+            if (next != g_wfFloor) {
+                g_wfFloor = (uint8_t)next;
+                Serial.printf("[sh] wf floor -> %u\n", (unsigned)g_wfFloor);
+                g_cfgDirty = true;
+            }
             g_resetArm = 0;
             return true;
         }
+      no_wffloor:;
     }
-    // Touch Recalibrate -- clear cal + reboot, cal flow runs on next boot.
-    if (ty >= kRecalY && ty < kRecalY + kRecalH
-        && tx >= kSetMargin && tx < 320 - kSetMargin) {
-        Preferences p;
-        p.begin(kCalNamespace, false);
-        p.clear();
-        p.end();
-        Serial.println("[sh] touch cal cleared, rebooting");
-        saveConfig();                  // persist whatever else is dirty first
-        delay(100);
-        ESP.restart();
-        return true;
-    }
-    // Factory Reset -- two-tap confirm
-    if (ty >= kResetY && ty < kResetY + kResetH
-        && tx >= kSetMargin && tx < 320 - kSetMargin) {
-        if (g_resetArm == 0) {
-            g_resetArm = 1;
+    // Row 5: WF Gain -- step by 1, clamp 1..6.
+    {
+        int rowY = settingsRowY(5);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            int next = g_wfGain;
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) next -= 1;
+            else if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) next += 1;
+            else goto no_wfgain;
+            if (next < 1) next = 1;
+            if (next > 6) next = 6;
+            if (next != g_wfGain) {
+                g_wfGain = (uint8_t)next;
+                Serial.printf("[sh] wf gain -> %u\n", (unsigned)g_wfGain);
+                g_cfgDirty = true;
+            }
+            g_resetArm = 0;
             return true;
         }
-        // Confirmed: wipe both cal + cfg namespaces, reboot
-        Preferences p;
-        p.begin(kCalNamespace, false); p.clear(); p.end();
-        p.begin(kCfgNamespace, false); p.clear(); p.end();
-        Serial.println("[sh] factory reset, rebooting");
-        delay(100);
-        ESP.restart();
-        return true;
+      no_wfgain:;
     }
-    // Any tap elsewhere clears the armed confirm.
+    // Row 6: Ref Level -- step 5 dB, clamp -10..-50.
+    {
+        int rowY = settingsRowY(6);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            int next = g_refDbm;
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) next -= 5;
+            else if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) next += 5;
+            else goto no_ref;
+            if (next < -50) next = -50;
+            if (next > -10) next = -10;
+            if (next != g_refDbm) {
+                g_refDbm = (int8_t)next;
+                Serial.printf("[sh] ref level -> %d dBm\n", (int)g_refDbm);
+                g_cfgDirty = true;
+            }
+            g_resetArm = 0;
+            return true;
+        }
+      no_ref:;
+    }
+    // Row 7: Range -- step 10 dB, clamp 20..80.
+    {
+        int rowY = settingsRowY(7);
+        int btnY = rowY - kBrightBtnH / 2;
+        if (ty >= btnY && ty < btnY + kBrightBtnH) {
+            int next = g_rangeDb;
+            if (tx >= kBrightMinusX && tx < kBrightMinusX + kBrightBtnW) next -= 10;
+            else if (tx >= kBrightPlusX && tx < kBrightPlusX + kBrightBtnW) next += 10;
+            else goto no_range;
+            if (next < 20) next = 20;
+            if (next > 80) next = 80;
+            if (next != g_rangeDb) {
+                g_rangeDb = (uint8_t)next;
+                Serial.printf("[sh] range -> %u dB\n", (unsigned)g_rangeDb);
+                g_cfgDirty = true;
+            }
+            g_resetArm = 0;
+            return true;
+        }
+      no_range:;
+    }
+    // Pill row: Rot | Inv | Recal | Reset (geometry must match drawSettingsScreen).
+    const int pillGap = 6;
+    const int pillW   = (tft.width() - 2 * kSetMargin - 3 * pillGap) / 4;
+    const int px0 = kSetMargin;
+    const int px1 = px0 + pillW + pillGap;
+    const int px2 = px1 + pillW + pillGap;
+    const int px3 = px2 + pillW + pillGap;
+    if (ty >= kSetPillY && ty < kSetPillY + kSetPillH) {
+        // Rot: advance rotation, clear cal, reboot
+        if (tx >= px0 && tx < px0 + pillW) {
+            g_rotation = (uint8_t)((g_rotation + 1) & 3);
+            saveConfig();
+            Preferences p;
+            p.begin(kCalNamespace, false); p.clear(); p.end();
+            Serial.printf("[sh] rotation -> %u, cal cleared, rebooting\n",
+                          (unsigned)g_rotation);
+            delay(100);
+            ESP.restart();
+            return true;
+        }
+        // Inv: toggle invert live
+        if (tx >= px1 && tx < px1 + pillW) {
+            g_invertOn = g_invertOn ? 0 : 1;
+            tft.invertDisplay(g_invertOn ? true : false);
+            g_cfgDirty = true;
+            g_resetArm = 0;
+            Serial.printf("[sh] invert -> %u\n", (unsigned)g_invertOn);
+            drawSettingsScreen();  // redraw to refresh pill label
+            return true;
+        }
+        // Recal: clear cal + reboot
+        if (tx >= px2 && tx < px2 + pillW) {
+            Preferences p;
+            p.begin(kCalNamespace, false);
+            p.clear();
+            p.end();
+            Serial.println("[sh] touch cal cleared, rebooting");
+            saveConfig();
+            delay(100);
+            ESP.restart();
+            return true;
+        }
+        // Reset: 2-tap armed factory reset
+        if (tx >= px3 && tx < px3 + pillW) {
+            if (g_resetArm == 0) {
+                g_resetArm = 1;
+                return true;
+            }
+            Preferences p;
+            p.begin(kCalNamespace, false); p.clear(); p.end();
+            p.begin(kCfgNamespace, false); p.clear(); p.end();
+            Serial.println("[sh] factory reset, rebooting");
+            delay(100);
+            ESP.restart();
+            return true;
+        }
+    }
     g_resetArm = 0;
+    return false;
+}
+
+// --- Call-sign editor sub-screen -------------------------------------------
+// 10x4 alphanumeric keyboard. Row 0: 0-9. Row 1: A-J. Row 2: K-T.
+// Row 3: U-Z + Backspace + Space + DONE.
+static char g_callEditBuf[12] = {0};
+static int  g_callEditLen = 0;
+
+static constexpr int kCellW = 32;
+static constexpr int kCellH = 36;
+static constexpr int kKbY   = 90;       // keyboard top
+
+static const char* kCallRow0 = "0123456789";
+static const char* kCallRow1 = "ABCDEFGHIJ";
+static const char* kCallRow2 = "KLMNOPQRST";
+static const char* kCallRow3 = "UVWXYZ";    // + 4 action keys
+
+static void enterCallsignEditor() {
+    memcpy(g_callEditBuf, g_callsign, sizeof(g_callEditBuf));
+    g_callEditBuf[sizeof(g_callEditBuf) - 1] = 0;
+    g_callEditLen = (int)strlen(g_callEditBuf);
+    g_screen = Screen::CALL_EDIT;
+}
+
+static void drawCallEditScreen() {
+    tft.fillScreen(color::BG);
+    drawCornerBack();
+    drawGlowTitle("CALL SIGN", tft.width() / 2, 20, 4);
+
+    // Readout bar: shows what you've typed so far
+    tft.fillRect(12, 50, 296, 28, color::BG);
+    tft.drawRect(12, 50, 296, 28, color::MID);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(color::OK_GREEN, color::BG);
+    tft.drawString(g_callEditLen > 0 ? g_callEditBuf : "_",
+                   tft.width() / 2, 64, 4);
+
+    // Keyboard rows -- 10 keys per row, 4 rows.
+    auto drawKey = [](int row, int col, const char* label) {
+        int x = col * kCellW;
+        int y = kKbY + row * (kCellH + 2);
+        drawGlowButton(x + 1, y, kCellW - 2, kCellH, label, false, 1);
+    };
+    for (int c = 0; c < 10; c++) {
+        char lbl[2] = { kCallRow0[c], 0 }; drawKey(0, c, lbl);
+    }
+    for (int c = 0; c < 10; c++) {
+        char lbl[2] = { kCallRow1[c], 0 }; drawKey(1, c, lbl);
+    }
+    for (int c = 0; c < 10; c++) {
+        char lbl[2] = { kCallRow2[c], 0 }; drawKey(2, c, lbl);
+    }
+    for (int c = 0; c < 6; c++) {
+        char lbl[2] = { kCallRow3[c], 0 }; drawKey(3, c, lbl);
+    }
+    // Action keys on row 3, cols 6..9
+    int row = 3;
+    int x6 = 6 * kCellW, y3 = kKbY + row * (kCellH + 2);
+    drawGlowButton(x6 + 1,            y3, kCellW - 2, kCellH, "<", false, 2);
+    drawGlowButton(x6 + kCellW + 1,   y3, kCellW - 2, kCellH, "_", false, 2);
+    drawGlowButton(x6 + 2*kCellW + 1, y3, 2 * kCellW - 2, kCellH, "DONE", true, 2);
+}
+
+static bool callEditTouch(int tx, int ty) {
+    // Keyboard rows
+    if (ty >= kKbY && ty < kKbY + 4 * (kCellH + 2)) {
+        int row = (ty - kKbY) / (kCellH + 2);
+        int col = tx / kCellW;
+        if (col < 0) col = 0;
+        if (col > 9) col = 9;
+        const char* r = (row == 0) ? kCallRow0 :
+                        (row == 1) ? kCallRow1 :
+                        (row == 2) ? kCallRow2 : nullptr;
+        if (r) {
+            // Row 0..2: all 10 are character keys
+            if (col >= 0 && col < 10) {
+                if (g_callEditLen < (int)sizeof(g_callEditBuf) - 1) {
+                    g_callEditBuf[g_callEditLen++] = r[col];
+                    g_callEditBuf[g_callEditLen] = 0;
+                    return true;
+                }
+            }
+        } else if (row == 3) {
+            if (col < 6) {
+                // U..Z character key
+                if (g_callEditLen < (int)sizeof(g_callEditBuf) - 1) {
+                    g_callEditBuf[g_callEditLen++] = kCallRow3[col];
+                    g_callEditBuf[g_callEditLen] = 0;
+                    return true;
+                }
+            } else if (col == 6) {
+                // Backspace
+                if (g_callEditLen > 0) {
+                    g_callEditBuf[--g_callEditLen] = 0;
+                    return true;
+                }
+            } else if (col == 7) {
+                // Space (allowed in call sign for things like "DE K1 XYZ")
+                if (g_callEditLen < (int)sizeof(g_callEditBuf) - 1) {
+                    g_callEditBuf[g_callEditLen++] = ' ';
+                    g_callEditBuf[g_callEditLen] = 0;
+                    return true;
+                }
+            } else {
+                // DONE (cols 8-9): save and return to Settings
+                memcpy(g_callsign, g_callEditBuf, sizeof(g_callsign));
+                g_callsign[sizeof(g_callsign) - 1] = 0;
+                saveConfig();
+                g_screen = Screen::SETTINGS;
+                Serial.printf("[sh] callsign saved: \"%s\"\n", g_callsign);
+                return true;
+            }
+        }
+    }
     return false;
 }
 
@@ -4463,6 +4931,7 @@ static void renderCurrentScreen() {
         case Screen::TX_80211: drawTx80211Screen();     break;
         case Screen::TX_MORSE: drawMorseScreen();       break;
         case Screen::TX_HOP:   drawHopScreen();         break;
+        case Screen::CALL_EDIT:drawCallEditScreen();    break;
         case Screen::SETTINGS: drawSettingsScreen();    break;
         default:               drawPlaceholder(g_screen); break;
     }
@@ -4512,6 +4981,11 @@ static bool handleTouchOnce() {
             if (g_screen == Screen::TX_HOP) {
                 g_screen = Screen::TRANSMIT;
                 persistBootDest(1);
+                return true;
+            }
+            if (g_screen == Screen::CALL_EDIT) {
+                // Discard edits; return to Settings.
+                g_screen = Screen::SETTINGS;
                 return true;
             }
             if (g_screen == Screen::TUNE || g_screen == Screen::TRANSMIT) {
@@ -4606,6 +5080,9 @@ static bool handleTouchOnce() {
         if (g_screen == Screen::TX_HOP && hopTouch(x, y)) {
             return true;
         }
+        if (g_screen == Screen::CALL_EDIT && callEditTouch(x, y)) {
+            return true;
+        }
     }
     return false;
 }
@@ -4633,6 +5110,35 @@ static void loadConfig() {
     g_trigBand      = (TrigBand)p.getUChar("trigBd", (uint8_t)g_trigBand);
     g_brightness    = p.getUChar ("bright", g_brightness);
     g_bootDest      = p.getUChar ("tx_boot", 0);
+    g_morseWpm      = p.getUChar ("mwpm",   g_morseWpm);
+    // TX power cap in 0.25 dB units, clamped to phy_init_data's LIMIT range
+    // of 40..78 (= 10 .. 19.5 dBm). Default 78 (ceiling).
+    extern uint8_t g_txPowerCap;
+    g_txPowerCap    = p.getUChar ("txcap",  78);
+    if (g_txPowerCap < 40) g_txPowerCap = 40;
+    if (g_txPowerCap > 78) g_txPowerCap = 78;
+    // Waterfall contrast knobs.
+    extern uint8_t g_wfFloor, g_wfGain;
+    g_wfFloor = p.getUChar("wfFlr", 120);
+    g_wfGain  = p.getUChar("wfGn",  2);
+    if (g_wfFloor > 220) g_wfFloor = 220;
+    if (g_wfGain  < 1)   g_wfGain  = 1;
+    if (g_wfGain  > 6)   g_wfGain  = 6;
+    // SDR dBm Y-axis knobs. Stored signed/unsigned to match the globals.
+    extern int8_t  g_refDbm;
+    extern uint8_t g_rangeDb;
+    g_refDbm  = (int8_t)p.getChar ("refDbm", -30);
+    g_rangeDb = p.getUChar("rngDb",  70);
+    if (g_refDbm < -50) g_refDbm = -50;
+    if (g_refDbm > -10) g_refDbm = -10;
+    if (g_rangeDb < 20) g_rangeDb = 20;
+    if (g_rangeDb > 80) g_rangeDb = 80;
+    // Display orientation + inversion.
+    extern uint8_t g_rotation, g_invertOn;
+    g_rotation = p.getUChar("rot",    1);
+    g_invertOn = p.getUChar("inv",    0);
+    if (g_rotation > 3) g_rotation = 1;
+    if (g_invertOn > 1) g_invertOn = 0;
     // Ham call sign for Morse presets. Empty string means "use the hard-coded
     // placeholder in the presets table." Setting via `callsign <STR>` CLI.
     {
@@ -4673,6 +5179,27 @@ static void saveConfig() {
     p.putUChar ("trigBd", (uint8_t)g_trigBand);
     p.putUChar ("bright", g_brightness);
     p.putUChar ("tx_boot", g_bootDest);
+    p.putUChar ("mwpm",   g_morseWpm);
+    {
+        extern uint8_t g_txPowerCap;
+        p.putUChar ("txcap", g_txPowerCap);
+    }
+    {
+        extern uint8_t g_wfFloor, g_wfGain;
+        p.putUChar("wfFlr", g_wfFloor);
+        p.putUChar("wfGn",  g_wfGain);
+    }
+    {
+        extern int8_t  g_refDbm;
+        extern uint8_t g_rangeDb;
+        p.putChar ("refDbm", (int8_t)g_refDbm);
+        p.putUChar("rngDb",  g_rangeDb);
+    }
+    {
+        extern uint8_t g_rotation, g_invertOn;
+        p.putUChar("rot", g_rotation);
+        p.putUChar("inv", g_invertOn);
+    }
     {
         extern char g_callsign[12];
         if (g_callsign[0]) p.putBytes("call", g_callsign, strlen(g_callsign) + 1);
@@ -4756,7 +5283,7 @@ void setup() {
 
     // --- TFT ---
     tft.init();
-    tft.setRotation(1);       // 320x240 landscape
+    tft.setRotation(1);       // placeholder; will be re-applied from config
     tft.fillScreen(color::BG);
     // Backlight on LEDC so we can PWM for brightness from Settings.
     ledcSetup(kBlChannel, kBlFreqHz, kBlResBits);
@@ -4765,6 +5292,32 @@ void setup() {
 
     // --- Config load (brightness, retune state, trigger config) ---
     loadConfig();
+    // Apply loaded display orientation + inversion AFTER config.
+    tft.setRotation(g_rotation);
+    tft.invertDisplay(g_invertOn ? true : false);
+    // Vertical layout depends on tft.height(), which changes with rotation.
+    // Compute now, inline, since the function is small and defined later.
+    {
+        int H = tft.height();
+        int avail = H - kPlotTop - 4 - 1 - kPillStripH;
+        // 60/40 plot/waterfall split. Waterfall rows capped at kWfRowsMax
+        // (DRAM budget); any slack goes to the plot. Landscape (avail=180)
+        // hits exactly 108/72 (matches the previous hard-coded layout);
+        // portrait (avail=260) ends up ~176 plot / 84 waterfall.
+        int plotPref  = (avail * 60) / 100;
+        int wfPref    = avail - plotPref;
+        g_wfRows      = wfPref / kWfRowH;
+        if (g_wfRows > kWfRowsMax) g_wfRows = kWfRowsMax;
+        g_wfHeight    = g_wfRows * kWfRowH;
+        g_plotHeight  = avail - g_wfHeight;
+        g_wfTop       = kPlotTop + g_plotHeight + 4;
+        g_pillStripTop= g_wfTop + g_wfHeight + 1;
+    }
+    tft.fillScreen(color::BG);
+    Serial.printf("[sh] display rotation=%u invert=%u (%ux%u) plotH=%d wfRows=%d\n",
+                  (unsigned)g_rotation, (unsigned)g_invertOn,
+                  (unsigned)tft.width(), (unsigned)tft.height(),
+                  g_plotHeight, g_wfRows);
     setBrightness(g_brightness);
 
     // --- Touch + calibration ---
@@ -4837,13 +5390,12 @@ void setup() {
     }
 
     // --- Quick wins from the libphy RE pass -----------------------------
-    // Pin max TX power to the chip ceiling (78 * 0.25 dB = 19.5 dBm, the
-    // highest LIMIT bound in esp_phy_init_data). Default build may clamp
-    // lower depending on CONFIG_ESP_PHY_MAX_TX_POWER. Call after esp-sdr
-    // brings up WiFi in NULL mode.
+    // Apply the user-configurable TX power cap (default 78 = 19.5 dBm, the
+    // highest LIMIT bound in esp_phy_init_data). Clamped 40..78 at load.
     {
-        esp_err_t e = esp_wifi_set_max_tx_power(78);
-        Serial.printf("[sh] esp_wifi_set_max_tx_power(78) rc=%d\n", (int)e);
+        esp_err_t e = esp_wifi_set_max_tx_power((int8_t)g_txPowerCap);
+        Serial.printf("[sh] esp_wifi_set_max_tx_power(%u) rc=%d (%.2f dBm)\n",
+                      (unsigned)g_txPowerCap, (int)e, g_txPowerCap * 0.25f);
     }
     // Tell libphy we're WiFi-only (no BT coexistence). Frees RF resources
     // the coex scheduler would otherwise reserve, giving CW TX a cleaner
@@ -5481,6 +6033,55 @@ static void cliExec(char* line) {
         saveConfig();
         Serial.printf("ok callsign=\"%s\" (saved; now in Morse presets)\n",
                       g_callsign);
+        return;
+    }
+    // Display orientation. 0=portrait, 1=landscape (default), 2=portrait-flip,
+    // 3=landscape-flip. Changing rotation invalidates touch calibration, so
+    // we clear it and reboot into the cal flow at the new orientation.
+    if (!strcmp(tok, "rotation") || !strcmp(tok, "rot")) {
+        char* a = strtok(nullptr, " ");
+        if (!a) {
+            Serial.printf("rotation=%u (0=port 1=land 2=port-flip 3=land-flip)\n",
+                          (unsigned)g_rotation);
+            return;
+        }
+        int r = atoi(a);
+        if (r < 0 || r > 3) { Serial.println("err rotation 0..3"); return; }
+        if ((uint8_t)r != g_rotation) {
+            g_rotation = (uint8_t)r;
+            g_cfgDirty = true;
+            saveConfig();
+            Preferences prefs;
+            prefs.begin(kCalNamespace, false);
+            prefs.clear();
+            prefs.end();
+            Serial.printf("ok rotation -> %u, cal cleared, rebooting\n",
+                          (unsigned)g_rotation);
+            delay(100);
+            ESP.restart();
+        } else {
+            Serial.printf("ok rotation already %u\n", (unsigned)g_rotation);
+        }
+        return;
+    }
+    // Display inversion. 0 or 1 (or "on"/"off"). Applied live.
+    if (!strcmp(tok, "invert") || !strcmp(tok, "inv")) {
+        char* a = strtok(nullptr, " ");
+        if (!a) {
+            Serial.printf("invert=%u\n", (unsigned)g_invertOn);
+            return;
+        }
+        uint8_t next = g_invertOn;
+        if (!strcmp(a, "on") || !strcmp(a, "1")) next = 1;
+        else if (!strcmp(a, "off") || !strcmp(a, "0")) next = 0;
+        else { Serial.println("err invert on/off/0/1"); return; }
+        if (next != g_invertOn) {
+            g_invertOn = next;
+            tft.invertDisplay(g_invertOn ? true : false);
+            g_cfgDirty = true;
+            saveConfig();
+        }
+        Serial.printf("ok invert -> %u\n", (unsigned)g_invertOn);
         return;
     }
     // Clear saved touch cal and reboot so the first-boot cal flow runs cleanly

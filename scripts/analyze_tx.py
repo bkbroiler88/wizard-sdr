@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Analyze a timed TX-sweep capture from hackrf_sweep (narrow 2435-2450 MHz)."""
 import csv
+import os
 import sys
 from datetime import datetime
 import numpy as np
@@ -81,4 +82,4 @@ def main(path):
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1
-         else r"C:\Users\bkenn\ESP32\signalhound-cyd\scripts\tx.csv")
+         else os.path.join(os.path.dirname(__file__), "tx.csv"))

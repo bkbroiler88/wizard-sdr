@@ -1,0 +1,33 @@
+Wizards SDR
+Copyright 2026 Wizards SDR contributors
+
+This product includes software developed by:
+
+  Espressif Systems (Shanghai) CO., LTD. — ESP32 Arduino core, esp-phy-lib
+    (vendored RF test blobs in lib/cert_test/librftest.a and libbttestmode.a).
+    Licensed under the Apache License 2.0.
+    https://github.com/espressif/arduino-esp32
+    https://github.com/espressif/esp-phy-lib
+
+  Bodmer — TFT_eSPI display + touch driver.
+    Licensed under FreeBSD-style terms. See the library's own LICENSE file.
+    https://github.com/Bodmer/TFT_eSPI
+
+  pioarduino — Arduino-on-IDF-5 build platform.
+    https://github.com/pioarduino/platform-espressif32
+
+This firmware was informed by prior ESP32 SDR research. We do not vendor
+their code, but acknowledge:
+
+  Jochen Hoenicke — esp-sdr-tx (polar-mod CW TX on ESP32-S3)
+    https://github.com/jhoenicke/esp-sdr-tx
+  ESPARGOS — ESP32 CSI receiver work
+    https://espargos.net/
+  Ragnar — undocumented-register exploration firmware
+
+Hardware designs referenced:
+
+  rzeldent — esp32-smartdisplay (CYD hardware reference)
+    https://github.com/rzeldent/esp32-smartdisplay
+  JustCallMeKoko — ESP32Marauder (AWOK board hardware)
+    https://github.com/justcallmekoko/ESP32Marauder

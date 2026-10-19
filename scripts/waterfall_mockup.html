@@ -1,0 +1,387 @@
+<title>Spectrum Plot Modes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  :root {
+    --bg: #0a0d12;
+    --surface: #131821;
+    --fg: #d8e0ec;
+    --mid: #7a8699;
+    --dim: #4a5262;
+    --accent: #ffb347;
+    --cyan: #4dc9d6;
+    --trace: #5fd38a;
+    --amber: #ffb347;
+    --red: #e94b3c;
+    --screen-bg: #0a0d12;
+    --font-ui: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: ui-monospace, 'JetBrains Mono', Consolas, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: var(--font-ui);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 24px;
+    margin: 0;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 {
+    font-family: var(--font-mono);
+    font-size: 1.1rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--mid); margin: 0 0 4px;
+  }
+  .sub {
+    color: var(--dim); font-size: 0.85rem; margin: 0 0 24px;
+  }
+  .cols {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;
+  }
+  .cols.three { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 1100px) { .cols.three { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 760px) { .cols, .cols.three { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--surface);
+    border-radius: 10px; padding: 16px; min-width: 0;
+    border: 1px solid #1e2531;
+  }
+  .mode {
+    font-family: var(--font-mono); font-size: 0.78rem;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--mid); margin-bottom: 2px;
+  }
+  .mode b { color: var(--fg); }
+  .diag { color: var(--dim); font-size: 0.78rem; margin-bottom: 10px; }
+
+  /* The device screen -- 320x240 landscape at 1.7x = 544x408 */
+  .screen {
+    width: 100%; aspect-ratio: 320/240;
+    background: var(--screen-bg);
+    border-radius: 4px;
+    border: 1px solid #222a38;
+    display: block;
+  }
+
+  .notes {
+    margin-top: 10px; font-size: 0.78rem;
+    color: var(--mid); line-height: 1.45;
+  }
+  .notes b { color: var(--fg); }
+  .legend {
+    display: flex; gap: 14px; font-size: 0.74rem;
+    color: var(--mid); margin-top: 8px; flex-wrap: wrap;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; }
+  footer {
+    margin-top: 20px; font-size: 0.78rem; color: var(--dim);
+    font-family: var(--font-mono);
+  }
+</style>
+
+<div class="wrap">
+  <h1>Spectrum Plot — Current vs A+B vs SDR</h1>
+  <p class="sub">Same frame data in all three: ch 7, 128 bins, avg≈140 max≈240 (from serial capture).</p>
+
+  <div class="cols three">
+    <!-- CURRENT -->
+    <div class="panel">
+      <div class="mode"><b>Current</b> — linear autoscale</div>
+      <div class="diag">plot: v / sceneMax &nbsp;|&nbsp; waterfall: v / 255</div>
+      <svg class="screen" viewBox="0 0 320 240" preserveAspectRatio="none" id="svgCurrent"></svg>
+      <div class="legend">
+        <span><span class="sw" style="background:#5fd38a"></span>live trace</span>
+        <span><span class="sw" style="background:#ffb347"></span>peak-hold</span>
+      </div>
+      <div class="notes">
+        Plot <b>autoscales to the frame peak</b>, so every bin from avg (~140) up
+        to max (~240) crowds the top half. The WiFi carrier sits as a wall of
+        green with jittery peaks; quiet vs. busy bins look nearly the same height.
+      </div>
+    </div>
+
+    <!-- A+B -->
+    <div class="panel">
+      <div class="mode"><b>A + B</b> — floor subtract + avg overlay</div>
+      <div class="diag">plot: (v − WF_Floor) × WF_Gain &nbsp;|&nbsp; cyan = slow EMA per bin</div>
+      <svg class="screen" viewBox="0 0 320 240" preserveAspectRatio="none" id="svgAB"></svg>
+      <div class="legend">
+        <span><span class="sw" style="background:#5fd38a"></span>live trace</span>
+        <span><span class="sw" style="background:#ffb347"></span>peak-hold</span>
+        <span><span class="sw" style="background:#4dc9d6"></span>avg (per-bin EMA)</span>
+      </div>
+      <div class="notes">
+        Quiet bins hug the <b>baseline</b>; busy bins reach the top. The cyan
+        line shows the per-bin average so you can see where the floor sits and
+        how far the live trace rises above it.
+      </div>
+    </div>
+
+    <!-- SDR mode -->
+    <div class="panel">
+      <div class="mode"><b>SDR</b> — calibrated dBm + 3-trace</div>
+      <div class="diag">y-axis: Ref −30 .. −100 dBm &nbsp;|&nbsp; 10 dB grid &nbsp;|&nbsp; peak marker</div>
+      <svg class="screen" viewBox="0 0 320 240" preserveAspectRatio="none" id="svgSDR"></svg>
+      <div class="legend">
+        <span><span class="sw" style="background:#5fd38a"></span>live</span>
+        <span><span class="sw" style="background:#4dc9d6"></span>avg</span>
+        <span><span class="sw" style="background:#ffb347"></span>max-hold</span>
+        <span><span class="sw" style="background:#e94b3c"></span>peak marker</span>
+      </div>
+      <div class="notes">
+        GQRX / SDR# convention: <b>dBm Y-axis</b> with Ref Level at the top and
+        Range below. 10 dB grid lines labeled on the left. Three traces at once:
+        live (green), per-bin average (cyan = noise floor), max-hold ridge
+        (amber). Peak marker in the corner reads out dBm + MHz. Waterfall
+        color scale is pinned to the same dB range so vertical color =
+        calibrated signal strength.
+      </div>
+    </div>
+  </div>
+
+  <footer>A+B uses WF Floor / WF Gain · SDR adds Ref Level / Range (dB) &amp; a peak-marker readout</footer>
+</div>
+
+<script>
+// ---- Shared mock frame: ch 7, 128 bins, span mode 1 (20 MHz) ----
+// Build a realistic WiFi-carrier spectrum: center hump 20 MHz wide, noise
+// floor at ~140, max-hold riding ~15 above live.
+const N = 128;
+const live = new Array(N);
+const peak = new Array(N);
+const avgLine = new Array(N);
+
+// Seeded pseudo-random so the mockup is stable across loads.
+let seed = 0x1234abcd;
+function rnd() {
+  seed = (seed * 1664525 + 1013904223) >>> 0;
+  return (seed & 0xffff) / 65535;
+}
+
+for (let i = 0; i < N; i++) {
+  // Base noise around 135 +/- 10
+  const noise = 135 + (rnd() - 0.5) * 20;
+  // WiFi 20 MHz carrier centered at bin 64, half-width ~34 bins (edges roll off)
+  const dx = Math.abs(i - 64);
+  let carrier = 0;
+  if (dx < 34) {
+    // Flat-top with slight hump near center; roll off to shoulders
+    const roll = dx < 28 ? 1 : (34 - dx) / 6;
+    carrier = (90 + Math.sin(i * 0.4) * 6) * roll;
+  }
+  const v = Math.min(255, Math.max(0, Math.round(noise + carrier + (rnd() - 0.5) * 14)));
+  live[i] = v;
+  // Max-hold is ~15 above live, with higher ridge over the carrier
+  peak[i] = Math.min(255, v + 12 + Math.round(rnd() * 8) + (carrier > 20 ? 10 : 0));
+  // Average line (what the slow EMA would land at): noise ~140, carrier center ~230
+  avgLine[i] = Math.round(noise + carrier * 0.85);
+}
+
+// ---- Renderers ----
+
+const kPlotTop = 20, kPlotBot = 140, kPlotH = kPlotBot - kPlotTop;
+const kWfTop = 148, kWfBot = 232, kWfRows = 24;
+const kPlotLeft = 6, kPlotRight = 314, kPlotW = kPlotRight - kPlotLeft;
+
+// 6-stop ramp used by firmware
+const stops = [
+  [6,9,26],[27,42,90],[45,79,145],
+  [79,139,182],[212,180,61],[227,74,42]
+];
+function rampColor(v) { // v in 0..255, no floor
+  const t = v / 255;
+  const x = Math.min(4.999, t * 5);
+  const i = Math.floor(x), f = x - i;
+  const r = stops[i][0] + (stops[i+1][0] - stops[i][0]) * f;
+  const g = stops[i][1] + (stops[i+1][1] - stops[i][1]) * f;
+  const b = stops[i][2] + (stops[i+1][2] - stops[i][2]) * f;
+  return `rgb(${r|0},${g|0},${b|0})`;
+}
+function rampAB(v, floor, gain) {
+  const a = v - floor;
+  if (a <= 0) return rampColor(0);
+  return rampColor(Math.min(255, a * gain));
+}
+
+function drawScreen(svgId, mode) {
+  const svg = document.getElementById(svgId);
+  let frag = '';
+
+  // Header strip (title + pills, like real UI)
+  frag += `<rect x="0" y="0" width="320" height="14" fill="#0f1420"/>`;
+  frag += `<text x="6" y="10" font-family="monospace" font-size="8" fill="#ffb347">LIVE  ch 7 • 2442 MHz</text>`;
+  frag += `<text x="314" y="10" font-family="monospace" font-size="7" fill="#4a5262" text-anchor="end">N=128 avg=140 max=240</text>`;
+
+  // Plot box
+  frag += `<rect x="5" y="${kPlotTop-1}" width="310" height="${kPlotH+2}" fill="none" stroke="#2a3140" stroke-width="0.5"/>`;
+
+  // Scale computation
+  const sceneMax = Math.max(...live);
+  let scaleDen = Math.max(48, Math.round(sceneMax * 1.15));
+  if (scaleDen > 255) scaleDen = 255;
+
+  function codeToYcurrent(v) {
+    const c = Math.min(scaleDen, v);
+    return kPlotTop + kPlotH - 1 - (c * (kPlotH - 1)) / scaleDen;
+  }
+  function codeToYab(v, floor, gain) {
+    const a = Math.max(0, (v - floor) * gain);
+    const c = Math.min(255, a);
+    return kPlotTop + kPlotH - 1 - (c * (kPlotH - 1)) / 255;
+  }
+
+  const floor = 120, gain = 2;
+
+  // ---- Live trace: filled columns from baseline up ----
+  for (let i = 0; i < N; i++) {
+    const x = kPlotLeft + (i * kPlotW) / (N - 1);
+    const v  = live[i];
+    const vh = peak[i];
+    const y  = (mode === 'current') ? codeToYcurrent(v)  : codeToYab(v, floor, gain);
+    const yh = (mode === 'current') ? codeToYcurrent(vh) : codeToYab(vh, floor, gain);
+
+    // Filled column (dim green)
+    if (y < kPlotBot - 1) {
+      frag += `<line x1="${x}" y1="${y+1}" x2="${x}" y2="${kPlotBot-1}" stroke="#1d4a2b" stroke-width="1.5"/>`;
+    }
+    // Peak-hold dot (dim amber)
+    if (vh > v + 2 && yh < kPlotBot - 1) {
+      frag += `<rect x="${x-0.5}" y="${yh}" width="1" height="1" fill="#8a5f1c"/>`;
+    }
+    // Live trace pixel (bright green)
+    frag += `<rect x="${x-0.5}" y="${y}" width="1" height="1" fill="#5fd38a"/>`;
+  }
+
+  // ---- A+B only: average (cyan) line overlay ----
+  if (mode === 'ab') {
+    let d = '';
+    for (let i = 0; i < N; i++) {
+      const x = kPlotLeft + (i * kPlotW) / (N - 1);
+      const y = codeToYab(avgLine[i], floor, gain);
+      d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    }
+    frag += `<path d="${d}" fill="none" stroke="#4dc9d6" stroke-width="0.8" opacity="0.85"/>`;
+  }
+
+  // ---- Waterfall ----
+  // 24 rows, slight temporal variation (just the current frame repeated with jitter)
+  for (let r = 0; r < kWfRows; r++) {
+    const y = kWfTop + r * ((kWfBot - kWfTop) / kWfRows);
+    const h = (kWfBot - kWfTop) / kWfRows;
+    for (let i = 0; i < N; i++) {
+      const x = kPlotLeft + (i * kPlotW) / (N - 1);
+      // Add some row-to-row jitter so older rows look like aging history
+      const ageJitter = (r / kWfRows) * 6;
+      const v = Math.max(0, Math.min(255, live[i] + Math.round((rnd() - 0.5) * 8 - ageJitter)));
+      const c = (mode === 'current') ? rampColor(v) : rampAB(v, floor, gain);
+      frag += `<rect x="${x-0.5}" y="${y}" width="1.5" height="${h+0.5}" fill="${c}"/>`;
+    }
+  }
+
+  svg.innerHTML = frag;
+}
+
+drawScreen('svgCurrent', 'current');
+drawScreen('svgAB', 'ab');
+
+// ---- SDR mode: calibrated dBm, 3 traces, peak marker, 10 dB grid ----
+function drawSDR() {
+  const svg = document.getElementById('svgSDR');
+  let frag = '';
+  // Firmware already does: dBm = -100 + bin*70/255. We use the SAME mapping
+  // for the Y-axis so the grid lines are honest.
+  const refDbm = -30;   // top of plot
+  const minDbm = -100;  // bottom of plot
+  const span   = refDbm - minDbm; // 70
+
+  // Header
+  frag += `<rect x="0" y="0" width="320" height="14" fill="#0f1420"/>`;
+  frag += `<text x="6" y="10" font-family="monospace" font-size="8" fill="#ffb347">SDR  ch 7 • 2442 MHz</text>`;
+  // Peak marker readout in header right
+  let pkIdx = 0, pkV = 0;
+  for (let i = 0; i < N; i++) if (live[i] > pkV) { pkV = live[i]; pkIdx = i; }
+  const pkDbm = -100 + (pkV * 70) / 255;
+  const pkMhz = 2432 + Math.round((pkIdx / N) * 20);
+  frag += `<text x="314" y="10" font-family="monospace" font-size="8" fill="#e94b3c" text-anchor="end">MAX ${pkDbm.toFixed(0)} dBm @ ${pkMhz} MHz</text>`;
+
+  const PT = 20, PB = 140, PH = PB - PT;
+  const PL = 24, PR = 314, PW = PR - PL;  // widen left for dB labels
+
+  // Plot frame
+  frag += `<rect x="${PL-1}" y="${PT-1}" width="${PW+2}" height="${PH+2}" fill="none" stroke="#2a3140" stroke-width="0.5"/>`;
+
+  // 10 dB grid lines + labels
+  for (let db = refDbm; db >= minDbm; db -= 10) {
+    const y = PT + ((refDbm - db) / span) * PH;
+    frag += `<line x1="${PL}" y1="${y}" x2="${PR}" y2="${y}" stroke="#1a2130" stroke-width="0.4" stroke-dasharray="2 3"/>`;
+    frag += `<text x="${PL-2}" y="${y+2}" font-family="monospace" font-size="6" fill="#4a5262" text-anchor="end">${db}</text>`;
+  }
+  // Y-axis unit
+  frag += `<text x="${PL-2}" y="${PT-3}" font-family="monospace" font-size="6" fill="#7a8699" text-anchor="end">dBm</text>`;
+
+  function binToY(v) {
+    const dbm = -100 + (v * 70) / 255;
+    const clamped = Math.max(minDbm, Math.min(refDbm, dbm));
+    return PT + ((refDbm - clamped) / span) * PH;
+  }
+
+  // Max-hold ridge (dim amber filled above the live trace)
+  let maxPath = '';
+  for (let i = 0; i < N; i++) {
+    const x = PL + (i * PW) / (N - 1);
+    const y = binToY(peak[i]);
+    maxPath += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+  }
+  frag += `<path d="${maxPath}" fill="none" stroke="#8a5f1c" stroke-width="0.6"/>`;
+
+  // Live trace (bright green outline)
+  let livePath = '';
+  for (let i = 0; i < N; i++) {
+    const x = PL + (i * PW) / (N - 1);
+    const y = binToY(live[i]);
+    livePath += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+  }
+  frag += `<path d="${livePath}" fill="none" stroke="#5fd38a" stroke-width="0.9"/>`;
+
+  // Average line (cyan)
+  let avgPath = '';
+  for (let i = 0; i < N; i++) {
+    const x = PL + (i * PW) / (N - 1);
+    const y = binToY(avgLine[i]);
+    avgPath += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+  }
+  frag += `<path d="${avgPath}" fill="none" stroke="#4dc9d6" stroke-width="0.7" opacity="0.9"/>`;
+
+  // Peak marker: red triangle at the top
+  {
+    const x = PL + (pkIdx * PW) / (N - 1);
+    const y = binToY(pkV);
+    frag += `<polygon points="${x-2},${y-5} ${x+2},${y-5} ${x},${y-1}" fill="#e94b3c"/>`;
+    frag += `<text x="${x+4}" y="${y-2}" font-family="monospace" font-size="6" fill="#e94b3c">${pkDbm.toFixed(0)}</text>`;
+  }
+
+  // Waterfall: calibrated to the same dB range
+  const kWfTop2 = 148, kWfBot2 = 232, kWfRows2 = 24;
+  for (let r = 0; r < kWfRows2; r++) {
+    const y = kWfTop2 + r * ((kWfBot2 - kWfTop2) / kWfRows2);
+    const h = (kWfBot2 - kWfTop2) / kWfRows2;
+    for (let i = 0; i < N; i++) {
+      const x = PL + (i * PW) / (N - 1);
+      const ageJitter = (r / kWfRows2) * 6;
+      const v = Math.max(0, Math.min(255, live[i] + Math.round((rnd() - 0.5) * 8 - ageJitter)));
+      // Pin color to the dB range so this scale == plot Y-axis scale
+      const dbm = -100 + (v * 70) / 255;
+      const t = Math.max(0, Math.min(1, (dbm - minDbm) / span));
+      const c = rampColor(Math.round(t * 255));
+      frag += `<rect x="${x-0.5}" y="${y}" width="${PW/N + 0.6}" height="${h+0.5}" fill="${c}"/>`;
+    }
+  }
+  // Waterfall dB scale labels (left edge)
+  frag += `<text x="4" y="156" font-family="monospace" font-size="6" fill="#4a5262">-30</text>`;
+  frag += `<text x="4" y="232" font-family="monospace" font-size="6" fill="#4a5262">-100</text>`;
+
+  svg.innerHTML = frag;
+}
+drawSDR();
+</script>
